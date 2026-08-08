@@ -1,45 +1,26 @@
-# .github/workflows/publish_gem.yml
-name: Release Gem
+name: Build & Publish Gem
 
 on:
-  release:
-    types: [published]
   push:
     tags:
       - 'v*'
 
 jobs:
   publish:
-    name: Build & Publish Gem
     runs-on: ubuntu-latest
-    
-    # Required for OIDC authentication with RubyGems.org
     permissions:
       contents: read
-      id-token: write
-
-    environment: rubygems # Matches environment name configured on RubyGems.org
+      id-token: write # Required for Trusted Publisher OIDC authentication
 
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v4
 
       - name: Set up Ruby
-        uses: actions/setup-ruby@v4
+        uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.3'
           bundler-cache: true
 
-      - name: Build Gem
-        run: |
-          gem build *.gemspec
-
-      - name: Publish to RubyGems via OIDC
-        uses: rubygems/configure-rubygems-credentials@v1
-        with:
-          # Automatically uses OpenID Connect token from GitHub Actions
-          role-to-assume: rubygems-publisher
-
-      - name: Push Gem to RubyGems
-        run: |
-          gem push *.gem
+      - name: Build and Publish to RubyGems
+        uses: rubygems/release-gem@v1
