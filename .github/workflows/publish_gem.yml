@@ -21,8 +21,7 @@ jobs:
         uses: ruby/setup-ruby@v1
         with:
           ruby-version: '3.4'
+          bundler-cache: true
 
       - name: Publish to RubyGems
         uses: rubygems/release-gem@v1
-        with:
-          setup-rake: false
