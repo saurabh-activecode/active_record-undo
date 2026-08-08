@@ -1,0 +1,23 @@
+# IDE / Editor configuration
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+
+# Bundler / Dependency paths
+/.bundle/
+/vendor/bundle/
+Gemfile.lock
+
+# Test environment sqlite database, logs, and tmp files (used by Combustion)
+/spec/internal/db/*.sqlite3
+/spec/internal/db/*.sqlite3-journal
+/spec/internal/db/*.sqlite3-shm
+/spec/internal/db/*.sqlite3-wal
+/spec/internal/log/*.log
+/spec/internal/tmp/
+
+# Gem packaging outputs
+/pkg/
+/*.gem
