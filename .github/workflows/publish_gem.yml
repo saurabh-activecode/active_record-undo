@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # Required for OIDC authentication with RubyGems
+      id-token: write
 
     steps:
       - uses: actions/checkout@v4
@@ -24,3 +24,5 @@ jobs:
 
       - name: Publish to RubyGems
         uses: rubygems/release-gem@v1
+        with:
+          setup-rake: false
