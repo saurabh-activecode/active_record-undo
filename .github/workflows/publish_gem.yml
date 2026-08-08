@@ -22,5 +22,5 @@ jobs:
           ruby-version: '3.3'
           bundler-cache: true
 
-      - name: Build and Publish to RubyGems
+      - name: Build & Publish to RubyGems
         uses: rubygems/release-gem@v1
