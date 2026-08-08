@@ -1,26 +1,26 @@
-name: Build & Publish Gem
+name: Ruby Gem
 
 on:
   push:
-    tags:
-      - 'v*'
+    branches: [ "master" ]
+  pull_request:
+    branches: [ "master" ]
 
 jobs:
-  publish:
+  build:
+    name: Build + Publish
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write # Required for Trusted Publisher OIDC authentication
+      id-token: write # Required for OIDC authentication with RubyGems
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Ruby
+      - name: Set up Ruby 3.4
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: '3.3'
-          bundler-cache: true
+          ruby-version: '3.4'
 
-      - name: Build & Publish to RubyGems
+      - name: Publish to RubyGems
         uses: rubygems/release-gem@v1
