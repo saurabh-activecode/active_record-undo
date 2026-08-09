@@ -12,13 +12,13 @@ jobs:
     if: github.event.pull_request.merged == true
     runs-on: ubuntu-latest
     permissions:
-      contents: write # Granted write access so 'rake release' can git push tags
+      contents: write
       id-token: write
 
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0 # Required by rake release to calculate git tags properly
+          fetch-depth: 0
 
       - name: Set up Ruby 3.4
         uses: ruby/setup-ruby@v1
