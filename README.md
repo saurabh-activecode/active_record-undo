@@ -1,6 +1,6 @@
 # ActiveRecord::Undo
 
-[![Gem Version](https://badge.fury.io/rb/active_record-undo.svg)](https://badge.fury.io/rb/active_record-undo)
+[![Gem Version](https://img.shields.io/gem/v/active_record-undo.svg?color=blue)](https://rubygems.org/gems/active_record-undo)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 **ActiveRecord::Undo** brings transactional, cascade-aware soft deletes and automatic restores to Rails applications.
