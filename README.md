@@ -12,11 +12,12 @@ Unlike conventional soft-deletion gems, `active_record-undo` automatically captu
 ## Features
 
 - 🔄 **Cascading Soft Deletes:** Soft deletes parent models along with dependent associations (`dependent: :destroy` / `:delete_all`).
-- ⏪ **Atomic Restores:** Reverses soft deletion for an entire object tree (`undo_log.restore!`) within a single database transaction.
+- ⏪ **Atomic Restores:** Reverses soft deletion for an entire object tree (`undo_log.restore!` or `record.restore!`) within a single database transaction.
+- 🔍 **Restoration Verification:** Provides `#undoable?` to check if a record is soft-deleted and has a valid undo log entry available for restoration.
 - ⚙️ **Configurable Columns:** Supports custom soft-delete columns (e.g., `:archived_at`, `:discarded_at`) per model while defaulting to `:deleted_at`.
 - 📦 **Polymorphic Tracking:** Records deletion events via native `UndoLog` and `UndoLogItem` models—no messy JSON payload parsing required.
 - 🚂 **Zero Generator Setup:** Built on top of `Rails::Engine`. Migrations automatically hook into `rails db:migrate`.
-- 🔍 **Default Scopes & Helpers:** Provides `.kept`, `.soft_deleted`, and `#soft_deleted?` query methods out of the box.
+- 🔍 **Default Scopes & Helpers:** Provides `.kept`, `.soft_deleted`, `#soft_deleted?`, and `#undoable?` query methods out of the box.
 
 ---
 
@@ -121,6 +122,24 @@ item.soft_deleted? # => true
 item.archived_at   # => 2026-08-08 22:20:16 UTC
 ```
 
+### Checking Restoration Eligibility (`#undoable?`)
+
+Use `#undoable?` to verify if a record is soft-deleted and has a corresponding `UndoLog` entry available in the database. This is ideal for conditionally rendering UI elements or validating controller actions:
+
+```ruby
+post = Post.unscoped.find(1)
+
+if post.undoable?
+  # Render "Undo Deletion" button or execute restore
+  post.restore!
+end
+```
+
+`#undoable?` returns `false` if:
+* The record is currently active (not soft deleted).
+* The record was soft deleted manually via direct SQL/column updates without generating an undo log.
+* The corresponding `UndoLog` record was purged or already restored.
+
 ### Inspect Deletion Logs
 
 Inspect affected records through standard Rails associations on the returned `UndoLog`:
@@ -159,7 +178,7 @@ post.comments.count       # => 2
 
 ## Scopes & Querying
 
-`ActiveRecord::Undo` provides scopes for filtering records based on the configured column:
+`ActiveRecord::Undo` provides scopes and predicate helpers for filtering and checking records based on the configured column:
 
 ```ruby
 # Fetch only active (non-deleted) records
@@ -167,6 +186,12 @@ Post.kept
 
 # Fetch soft-deleted records
 Post.soft_deleted
+
+# Check if a record is soft-deleted
+post.soft_deleted?
+
+# Check if a record is soft-deleted AND can be restored via an undo log
+post.undoable?
 
 # Retrieve records including soft-deleted ones via unscoped
 Post.unscoped.where(id: 1)
@@ -179,7 +204,8 @@ Post.unscoped.where(id: 1)
 1. **Cascade Inspection:** When `soft_delete!` is called, `ActiveRecord::Undo::CascadeHandler` reflects on `has_many`, `has_one`, and `belongs_to` associations configured with `dependent: :destroy` or `:delete_all`.
 2. **Dynamic Column Resolution:** The handler checks `record.class.undoable_column` to set the correct timestamp column (`:deleted_at`, `:archived_at`, etc.) across all affected models.
 3. **Polymorphic Logging:** An `ActiveRecord::Undo::UndoLog` record is created alongside multiple `ActiveRecord::Undo::UndoLogItem` entries mapping polymorphic references (`item_type`, `item_id`) to every affected record.
-4. **Atomic Operation:** All updates and log creations take place within an `ActiveRecord::Base.transaction`.
+4. **Restoration Verification:** Calling `#undoable?` executes an efficient SQL query joining `undo_log_items` and `undo_logs` to ensure the entity is soft-deleted and its associated log entry exists before restoration.
+5. **Atomic Operation:** All updates and log creations take place within an `ActiveRecord::Base.transaction`.
 
 ---
 
