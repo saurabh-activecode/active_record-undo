@@ -27,6 +27,15 @@ module ActiveRecord
           public_send(self.class.undoable_column).present?
         end
 
+        def undoable?
+          return false unless soft_deleted?
+
+          ActiveRecord::Undo::UndoLogItem.joins(:undo_log).exists?(
+            item_type: self.class.name,
+            item_id: id
+          )
+        end
+
         def soft_delete!
           ensure_undoable_column_exists!
           return false if soft_deleted?
