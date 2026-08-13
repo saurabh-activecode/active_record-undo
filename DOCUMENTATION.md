@@ -12,6 +12,7 @@ graph TD
     
     subgraph GemCore[ActiveRecord::Undo Core Engine]
         ModelExt -->|Calls soft_delete!| TxBoundary[ActiveRecord::Base.transaction]
+        ModelExt -->|Calls undoable?| CheckQuery[SQL EXISTS Query across UndoLogItem & UndoLog]
         
         subgraph TxBoundary
             CreateLog[Create UndoLog Parent]
@@ -28,6 +29,7 @@ graph TD
     subgraph DatabaseStorage[Persistence Layer]
         AppendItem --> UndoLogTable[(undo_logs)]
         AppendItem --> UndoItemTable[(undo_log_items)]
+        CheckQuery --> UndoItemTable
     end
 ```
 
@@ -40,7 +42,7 @@ graph TD
 | Component | File Path | Class / Module | Core Responsibility |
 | :--- | :--- | :--- | :--- |
 | **Main Hook** | `lib/active_record/undo.rb` | `ActiveRecord::Undo` | Hooks into `ActiveSupport.on_load(:active_record)` |
-| **Model Extension** | `lib/active_record/undo/model_extension.rb` | `ModelExtension` | Injects DSL (`acts_as_undoable`), scopes (`kept`, `soft_deleted`), and methods (`soft_delete!`) |
+| **Model Extension** | `lib/active_record/undo/model_extension.rb` | `ModelExtension` | Injects DSL (`acts_as_undoable`), scopes (`kept`, `soft_deleted`), and methods (`soft_delete!`, `undoable?`, `restore!`) |
 | **Cascade Engine** | `lib/active_record/undo/cascade_handler.rb` | `CascadeHandler` | Inspects ActiveRecord reflections (`reflections`) and executes DFS traversal |
 | **Cascade Association Finder** | `lib/active_record/undo/cascade_handler/association_finder.rb` | `AssociationFinder` | Resolves which records should cascade based on dependency configuration |
 | **Cascade Record Updater** | `lib/active_record/undo/cascade_handler/record_updater.rb` | `RecordUpdater` | Updates the database timestamps directly bypassing callbacks |
@@ -117,6 +119,28 @@ sequenceDiagram
     Model-->>User: Returns UndoLog Instance
 ```
 
+### Restoration Verification Flow (`#undoable?`)
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User
+    participant Model as Post Model
+    participant Ext as ModelExtension
+    participant DB as SQL Engine
+
+    User->>Model: post.undoable?
+    Model->>Ext: Check soft_deleted?
+    
+    alt Not Soft Deleted
+        Ext-->>User: returns false
+    else Is Soft Deleted
+        Ext->>DB: SELECT 1 FROM undo_log_items INNER JOIN undo_logs ... LIMIT 1
+        DB-->>Ext: Record Exists (true / false)
+        Ext-->>User: returns boolean
+    end
+```
+
 ### Restoration Flow (`#restore!`)
 
 ```mermaid
@@ -147,9 +171,10 @@ sequenceDiagram
 
 1. **Depth-First Traversal Order:** Cascading deletes traverse downward to child records before updating the parent node. Child item associations are appended to `undo_log_items` first, and the parent record is appended last.
 2. **Reverse Restoration Order:** `#restore!` calls `undo_log_items.reverse_each`. This ensures the parent node is restored first before restoring its dependent records, maintaining database relational integrity.
-3. **Bypassing Callbacks:** Soft-deletion updates use `update_columns`. This executes a direct SQL `UPDATE` query without firing standard ActiveRecord persistence callbacks (`save`, `validate`), preventing unintended side effects during soft deletes.
-4. **Unscoped Model Resolution:** `#restore_item!` uses `klass.unscoped.find_by(id: item_id)` to locate records. This guarantees records are retrieved even when models define default scopes that filter out soft-deleted records.
-5. **Class Inheritance Security Check:** When constantizing stored class strings, the gem validates that target models inherit from `ActiveRecord::Base` to prevent arbitrary non-model constant manipulation.
+3. **Optimized `#undoable?` Query Execution:** Calling `#undoable?` executes a single optimized `EXISTS` query (`joins(:undo_log).exists?(item_type: self.class.name, item_id: id)`). This checks for the presence of both the audit item and the valid parent log without loading records into Ruby memory.
+4. **Bypassing Callbacks:** Soft-deletion updates use `update_columns`. This executes a direct SQL `UPDATE` query without firing standard ActiveRecord persistence callbacks (`save`, `validate`), preventing unintended side effects during soft deletes.
+5. **Unscoped Model Resolution:** `#restore_item!` uses `klass.unscoped.find_by(id: item_id)` to locate records. This guarantees records are retrieved even when models define default scopes that filter out soft-deleted records.
+6. **Class Inheritance Security Check:** When constantizing stored class strings, the gem validates that target models inherit from `ActiveRecord::Base` to prevent arbitrary non-model constant manipulation.
 
 ---
 
@@ -179,6 +204,12 @@ sequenceDiagram
     - `soft_deleted` scope: Returns records that are soft-deleted (`where.not(column => nil)`).
 * **`soft_deleted?`**
   - *Function*: Checks if the current record instance has been soft-deleted. Returns `true` if the configured deletion column is populated with a timestamp.
+* **`undoable?`**
+  - *Function*: Checks if the soft-deleted record has a valid undo log entry available for restoration.
+  - *Steps*:
+    1. Returns `false` immediately if `soft_deleted?` is `false`.
+    2. Performs a lightweight SQL `EXISTS` query (`ActiveRecord::Undo::UndoLogItem.joins(:undo_log).exists?(item_type: self.class.name, item_id: id)`).
+    3. Returns `true` if both the log item and its parent `UndoLog` exist in the database.
 * **`soft_delete!`**
   - *Function*: Starts the cascade soft-deletion sequence for the record.
   - *Steps*:
