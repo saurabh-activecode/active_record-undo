@@ -316,4 +316,31 @@ RSpec.describe ActiveRecord::Undo do
       expect(comment.reload.soft_deleted?).to be true
     end
   end
+
+  describe '#undoable?' do
+    let!(:post) { Post.create!(title: 'Check Undoable') }
+
+    it 'returns false for active (non-deleted) records' do
+      expect(post.undoable?).to be false
+    end
+
+    it 'returns true when soft deleted via the gem and undo log exists' do
+      post.soft_delete!
+      expect(post.reload.undoable?).to be true
+    end
+
+    it 'returns false if soft-deleted manually without an undo log entry' do
+      # Simulating a direct SQL update or legacy soft delete
+      post.update_columns(deleted_at: Time.current)
+      expect(post.reload.undoable?).to be false
+    end
+
+    it 'returns false after the undo log has been restored or destroyed' do
+      undo_log = post.soft_delete!
+      expect(post.reload.undoable?).to be true
+
+      undo_log.restore!
+      expect(post.reload.undoable?).to be false
+    end
+  end
 end
