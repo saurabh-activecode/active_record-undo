@@ -71,6 +71,18 @@ RSpec.describe ActiveRecord::Undo do
       expect(comment_2.reload.soft_deleted?).to be true
     end
 
+    it 'sets exactly the same soft_delete timestamp for the parent and all cascaded children' do
+      post.soft_delete!
+
+      parent_timestamp = post.reload.deleted_at
+      comment_1_timestamp = comment_1.reload.deleted_at
+      comment_2_timestamp = comment_2.reload.deleted_at
+
+      expect(parent_timestamp).to be_present
+      expect(comment_1_timestamp).to eq(parent_timestamp)
+      expect(comment_2_timestamp).to eq(parent_timestamp)
+    end
+
     it 'creates an UndoLog with UndoLogItems for all affected records' do
       expect do
         post.soft_delete!

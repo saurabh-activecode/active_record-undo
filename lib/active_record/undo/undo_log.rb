@@ -8,6 +8,15 @@ module ActiveRecord
 
       has_many :undo_log_items, class_name: 'ActiveRecord::Undo::UndoLogItem', dependent: :destroy
 
+      scope :expired, lambda {
+        period = ActiveRecord::Undo.config.retention_period
+        if period
+          where('created_at < ?', Time.current - period)
+        else
+          none
+        end
+      }
+
       # Restores all records associated with this deletion batch
       def restore!
         transaction do

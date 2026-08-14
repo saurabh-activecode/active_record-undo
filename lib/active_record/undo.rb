@@ -9,15 +9,41 @@ rescue LoadError => e
         "Please add 'activerecord' to your Gemfile. (Original error: #{e.message})"
 end
 
+require 'set'
 require_relative 'undo/version'
 require_relative 'undo/engine' if defined?(Rails::Engine)
+require_relative 'undo/configuration'
 require_relative 'undo/model_extension'
 require_relative 'undo/undo_log'
 require_relative 'undo/undo_log_item'
+require_relative 'undo/purger'
+require_relative 'undo/purge_job'
 
 module ActiveRecord
   module Undo
     class Error < StandardError; end
+
+    class << self
+      def config
+        @config ||= Configuration.new
+      end
+
+      def configure
+        yield(config)
+      end
+
+      def registered_models
+        @registered_models ||= Set.new
+      end
+
+      def undoable_models
+        models = registered_models.to_a
+        if defined?(ActiveRecord::Base)
+          models += ActiveRecord::Base.descendants.select { |m| m.respond_to?(:undoable_column) }
+        end
+        models.uniq
+      end
+    end
   end
 end
 

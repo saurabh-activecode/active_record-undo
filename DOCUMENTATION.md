@@ -49,6 +49,10 @@ graph TD
 | **Audit Log Parent** | `lib/active_record/undo/undo_log.rb` | `UndoLog` | Represents the top-level deletion event and manages atomic batch restoration |
 | **Audit Log Child** | `lib/active_record/undo/undo_log_item.rb` | `UndoLogItem` | Maps polymorphic targets (`item_type`, `item_id`) to original deleted entities |
 | **Engine Link** | `lib/active_record/undo/engine.rb` | `Engine` | Appends `db/migrate/` directly to host app migration paths |
+| **Configuration** | `lib/active_record/undo/configuration.rb` | `Configuration` | Houses retention_period settings |
+| **Purger Service** | `lib/active_record/undo/purger.rb` | `Purger` | Deletes expired UndoLog/Items and soft-deleted model records in batches |
+| **Purge Job** | `lib/active_record/undo/purge_job.rb` | `PurgeJob` | ActiveJob background runner invoking Purger |
+| **Rake Task** | `lib/active_record/undo/tasks/purge.rake` | Rake Task | Exposes `active_record_undo:purge_expired` command |
 
 ---
 
@@ -202,6 +206,7 @@ sequenceDiagram
     - `undoable_column`: Caches the name of the column (defaults to `:deleted_at`).
     - `kept` scope: Returns records that are not soft-deleted (`where(column => nil)`).
     - `soft_deleted` scope: Returns records that are soft-deleted (`where.not(column => nil)`).
+    - `expired` scope: Returns records soft-deleted before the global retention period threshold.
 * **`soft_deleted?`**
   - *Function*: Checks if the current record instance has been soft-deleted. Returns `true` if the configured deletion column is populated with a timestamp.
 * **`undoable?`**
@@ -290,3 +295,30 @@ sequenceDiagram
   - *Function*: Confirms that the target soft-delete column exists in the class's table schema. Throws `ActiveRecord::Undo::Error` if missing.
 * **`reset_soft_delete_column!(target, column_name)` (Private)**
   - *Function*: Bypasses standard callbacks and validations to write a `nil` value to the soft-delete column directly in the database.
+
+### 6.9 `lib/active_record/undo/configuration.rb` (Global Configuration)
+
+* **`Configuration#initialize`**
+  - *Function*: Instantiates default configurations for the gem.
+  - *Details*: Sets default `@retention_period` to `30.days`.
+
+### 6.10 `lib/active_record/undo/purger.rb` (Hard Purging Engine)
+
+* **`Purger.purge_expired!(batch_size: 1000)`**
+  - *Function*: Cleans up all database records and logs that are past their retention limits.
+  - *Steps*:
+    1. Delegates to `purge_expired_logs!(batch_size)` to find and clean up expired `UndoLog` and `UndoLogItem` entries in batches using direct SQL `delete_all` execution.
+    2. Delegates to `purge_expired_records!(batch_size)` to iterate over all registered undoable models, identify expired records via the `.expired` scope, and hard-delete them in batches using direct SQL `delete_all` execution.
+  - *Relational Integrity*: By enforcing a single global retention period, cascading parent and child records share the same deletion timestamp and expiration threshold, ensuring they expire and are hard-deleted together, preventing orphaned child records.
+
+### 6.11 `lib/active_record/undo/purge_job.rb` (Background Task Worker)
+
+* **`PurgeJob#perform(batch_size: 1000)`**
+  - *Function*: Runs inside ActiveJob (when available) to execute purging asynchronously.
+  - *Details*: Invokes `ActiveRecord::Undo::Purger.purge_expired!(batch_size: batch_size)`.
+
+### 6.12 `lib/active_record/undo/tasks/purge.rake` (Command Line Utility)
+
+* **`active_record_undo:purge_expired`**
+  - *Function*: Exposes CLI Rake task for the purger engine.
+  - *Details*: Checks `ENV['BATCH_SIZE']` for custom batch sizes, falling back to 1000, and triggers `ActiveRecord::Undo::Purger.purge_expired!`.

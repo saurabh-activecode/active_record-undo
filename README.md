@@ -199,6 +199,75 @@ Post.unscoped.where(id: 1)
 
 ---
 
+## Expiration, Retention & Auto-Purging
+
+To prevent database bloat, `active_record-undo` supports automated retention periods, expiration checks, and background purging for both soft-deleted records and their associated `UndoLog` audit entries.
+
+### 1. Global Configuration
+
+You can configure a global retention period inside a Rails initializer:
+
+```ruby
+# config/initializers/active_record_undo.rb
+ActiveRecord::Undo.configure do |config|
+  # Default retention period for all soft-deleted records and undo logs (defaults to 30.days)
+  config.retention_period = 30.days
+end
+```
+
+If `retention_period` is set to `nil`, records and logs will never expire.
+
+### 2. Expiration Scopes & Helpers
+
+The gem provides query scopes and instance predicate helpers:
+
+- **Model `.expired` Scope**: Returns soft-deleted records older than the configured retention period.
+  ```ruby
+  Post.expired # => ActiveRecord::Relation of posts soft-deleted > 30 days ago
+  ```
+- **Model `#expired?` Predicate**: Checks if a record is soft-deleted and past the retention period.
+  ```ruby
+  post.expired? # => true/false
+  ```
+- **`UndoLog.expired` Scope**: Returns undo log entries older than the retention period.
+  ```ruby
+  ActiveRecord::Undo::UndoLog.expired # => logs created > 30 days ago
+  ```
+
+### 3. Background Purging
+
+#### Purger Service
+The `ActiveRecord::Undo::Purger` class performs hard SQL deletes on expired records and logs using `delete_all` (bypassing callbacks and validations for efficiency):
+
+```ruby
+# Purge all expired soft-deleted records and undo logs in batches
+ActiveRecord::Undo::Purger.purge_expired!(batch_size: 1000)
+```
+
+> [!NOTE]
+> **Relational Integrity & Orphan Prevention**: Because the retention period is globally unified, parent and child records soft-deleted together share the exact same deletion timestamp and expiration threshold. Therefore, when the purger runs, both parent and child records expire and are hard-deleted in the same run, completely preventing the creation of orphaned records in your database.
+
+#### ActiveJob Background Job
+The gem provides an ActiveJob class that calls the Purger service:
+
+```ruby
+# Enqueue the purge job to run in the background
+ActiveRecord::Undo::PurgeJob.perform_later(batch_size: 1000)
+```
+
+#### Engine Rake Task
+You can run the purge task via Rake. This task is automatically loaded into host applications:
+
+```bash
+# Run with the default batch size of 1000
+$ rails active_record_undo:purge_expired
+
+# Run with a custom batch size
+$ BATCH_SIZE=500 rails active_record_undo:purge_expired
+```
+
+---
+
 ## How It Works
 
 1. **Cascade Inspection:** When `soft_delete!` is called, `ActiveRecord::Undo::CascadeHandler` reflects on `has_many`, `has_one`, and `belongs_to` associations configured with `dependent: :destroy` or `:delete_all`.

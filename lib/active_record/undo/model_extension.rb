@@ -8,23 +8,59 @@ module ActiveRecord
     module ModelExtension
       extend ActiveSupport::Concern
 
-      class_methods do
+      module ClassMethods
         # Accept a custom column parameter, defaulting to :deleted_at
         def acts_as_undoable(column: :deleted_at)
           include InstanceMethods
 
+          define_undo_attributes!(column)
+          define_undo_scopes!
+
+          ActiveRecord::Undo.registered_models << self
+        end
+
+        private
+
+        def define_undo_attributes!(column)
           class_attribute :undoable_column
           self.undoable_column = column.to_sym
+        end
 
-          # Dynamic scopes using the configured column
+        def define_undo_scopes!
+          define_basic_scopes!
+          define_expired_scope!
+        end
+
+        def define_basic_scopes!
           scope :kept, -> { where(undoable_column => nil) }
           scope :soft_deleted, -> { where.not(undoable_column => nil) }
+        end
+
+        def define_expired_scope!
+          scope :expired, lambda {
+            period = ActiveRecord::Undo.config.retention_period
+            if period
+              where("#{table_name}.#{undoable_column} < ?", Time.current - period)
+            else
+              none
+            end
+          }
         end
       end
 
       module InstanceMethods
         def soft_deleted?
           public_send(self.class.undoable_column).present?
+        end
+
+        def expired?
+          return false unless soft_deleted?
+
+          period = ActiveRecord::Undo.config.retention_period
+          return false unless period
+
+          timestamp = public_send(self.class.undoable_column)
+          timestamp && timestamp < Time.current - period
         end
 
         def undoable?
