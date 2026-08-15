@@ -210,13 +210,26 @@ RSpec.describe ActiveRecord::Undo do
       expect(comment.reload.soft_deleted?).to be false
     end
 
+    it 'automatically reloads the record in-memory when restore! is called directly' do
+      post.soft_delete!
+      expect(post.reload.soft_deleted?).to be true
+
+      post.restore!
+
+      # Should be updated in-memory directly without calling reload
+      expect(post.soft_deleted?).to be false
+      expect(post.deleted_at).to be_nil
+    end
+
     it 'falls back to simple restore if no UndoLogItem exists' do
       post.update_columns(deleted_at: Time.current)
       expect(post.reload.soft_deleted?).to be true
 
       post.restore!
 
-      expect(post.reload.soft_deleted?).to be false
+      # Verified auto-reloaded in-memory state
+      expect(post.soft_deleted?).to be false
+      expect(post.deleted_at).to be_nil
     end
   end
 
