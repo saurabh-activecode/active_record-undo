@@ -49,6 +49,10 @@ graph TD
 | **Audit Log Parent** | `lib/active_record/undo/undo_log.rb` | `UndoLog` | Represents the top-level deletion event and manages atomic batch restoration |
 | **Audit Log Child** | `lib/active_record/undo/undo_log_item.rb` | `UndoLogItem` | Maps polymorphic targets (`item_type`, `item_id`) to original deleted entities |
 | **Engine Link** | `lib/active_record/undo/engine.rb` | `Engine` | Appends `db/migrate/` directly to host app migration paths |
+| **Configuration** | `lib/active_record/undo/configuration.rb` | `Configuration` | Houses retention_period settings |
+| **Purger Service** | `lib/active_record/undo/purger.rb` | `Purger` | Deletes expired UndoLog/Items and soft-deleted model records in batches |
+| **Purge Job** | `lib/active_record/undo/purge_job.rb` | `PurgeJob` | ActiveJob background runner invoking Purger |
+| **Rake Task** | `lib/active_record/undo/tasks/purge.rake` | Rake Task | Exposes `active_record_undo:purge_expired` command |
 
 ---
 
@@ -202,6 +206,7 @@ sequenceDiagram
     - `undoable_column`: Caches the name of the column (defaults to `:deleted_at`).
     - `kept` scope: Returns records that are not soft-deleted (`where(column => nil)`).
     - `soft_deleted` scope: Returns records that are soft-deleted (`where.not(column => nil)`).
+    - `expired` scope: Returns records soft-deleted before the global retention period threshold.
 * **`soft_deleted?`**
   - *Function*: Checks if the current record instance has been soft-deleted. Returns `true` if the configured deletion column is populated with a timestamp.
 * **`undoable?`**
@@ -227,6 +232,7 @@ sequenceDiagram
     3. Resolves the latest `UndoLogItem` that records the soft-deletion of this instance.
     4. If a log item is found, it calls `restore!` on the parent `UndoLog` (which restores the entire deleted tree).
     5. If no log item is found, it falls back to a simple, direct restore by setting the deletion column back to `nil`.
+    6. Automatically reloads the instance attributes in-memory (using `reload`) to refresh the model state before returning `true`.
 * **`ensure_undoable_column_exists!` (Private)**
   - *Function*: Asserts that the configured soft-delete column exists in the database schema table. Raises `ActiveRecord::Undo::Error` if missing.
 * **`find_latest_undo_log_item` (Private)**
@@ -290,3 +296,30 @@ sequenceDiagram
   - *Function*: Confirms that the target soft-delete column exists in the class's table schema. Throws `ActiveRecord::Undo::Error` if missing.
 * **`reset_soft_delete_column!(target, column_name)` (Private)**
   - *Function*: Bypasses standard callbacks and validations to write a `nil` value to the soft-delete column directly in the database.
+
+### 6.9 `lib/active_record/undo/configuration.rb` (Global Configuration)
+
+* **`Configuration#initialize`**
+  - *Function*: Instantiates default configurations for the gem.
+  - *Details*: Sets default `@retention_period` to `30.days`.
+
+### 6.10 `lib/active_record/undo/purger.rb` (Hard Purging Engine)
+
+* **`Purger.purge_expired!(batch_size: 1000)`**
+  - *Function*: Cleans up all database records and logs that are past their retention limits.
+  - *Steps*:
+    1. Delegates to `purge_expired_logs!(batch_size)` to find and clean up expired `UndoLog` and `UndoLogItem` entries in batches using direct SQL `delete_all` execution.
+    2. Delegates to `purge_expired_records!(batch_size)` to eager-load the host Rails application models (preventing Zeitwerk lazy-load gaps), identify expired records via the `.expired` scope, and hard-delete them and their cascading dependent associations in batches.
+  - *Relational Integrity & Constraint Protection*: Bottom-up recursive cascading deletes are performed first for associations marked as `:destroy`, `:delete_all`, or `:soft_delete`. For `:nullify` configurations, foreign key values are updated to `nil`, falling back to cascading deletion if the column contains a database-level `NOT NULL` constraint.
+
+### 6.11 `lib/active_record/undo/purge_job.rb` (Background Task Worker)
+
+* **`PurgeJob#perform(batch_size: 1000)`**
+  - *Function*: Runs inside ActiveJob (when available) to execute purging asynchronously.
+  - *Details*: Invokes `ActiveRecord::Undo::Purger.purge_expired!(batch_size: batch_size)`.
+
+### 6.12 `lib/active_record/undo/tasks/purge.rake` (Command Line Utility)
+
+* **`active_record_undo:purge_expired`**
+  - *Function*: Exposes CLI Rake task for the purger engine.
+  - *Details*: Checks `ENV['BATCH_SIZE']` for custom batch sizes, falling back to 1000, and triggers `ActiveRecord::Undo::Purger.purge_expired!`.
