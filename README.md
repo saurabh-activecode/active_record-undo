@@ -159,11 +159,11 @@ To restore a deleted object tree, you can invoke `restore!` either on the corres
 Calling `restore!` directly on the soft-deleted model automatically resolves its latest deletion event log, performs the cascading restore, and cleans up the log database rows:
 
 ```ruby
-# Restores the post and all comments deleted in the same batch
+# Restores the post and all comments deleted in the same batch (automatically reloads in-memory)
 post.restore!
 
-post.reload.soft_deleted? # => false
-post.comments.count       # => 2
+post.soft_deleted?  # => false
+post.comments.count # => 2
 ```
 
 #### Option B: Restore from the `UndoLog`

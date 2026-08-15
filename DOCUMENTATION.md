@@ -232,6 +232,7 @@ sequenceDiagram
     3. Resolves the latest `UndoLogItem` that records the soft-deletion of this instance.
     4. If a log item is found, it calls `restore!` on the parent `UndoLog` (which restores the entire deleted tree).
     5. If no log item is found, it falls back to a simple, direct restore by setting the deletion column back to `nil`.
+    6. Automatically reloads the instance attributes in-memory (using `reload`) to refresh the model state before returning `true`.
 * **`ensure_undoable_column_exists!` (Private)**
   - *Function*: Asserts that the configured soft-delete column exists in the database schema table. Raises `ActiveRecord::Undo::Error` if missing.
 * **`find_latest_undo_log_item` (Private)**
