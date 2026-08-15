@@ -309,8 +309,8 @@ sequenceDiagram
   - *Function*: Cleans up all database records and logs that are past their retention limits.
   - *Steps*:
     1. Delegates to `purge_expired_logs!(batch_size)` to find and clean up expired `UndoLog` and `UndoLogItem` entries in batches using direct SQL `delete_all` execution.
-    2. Delegates to `purge_expired_records!(batch_size)` to iterate over all registered undoable models, identify expired records via the `.expired` scope, and hard-delete them in batches using direct SQL `delete_all` execution.
-  - *Relational Integrity*: By enforcing a single global retention period, cascading parent and child records share the same deletion timestamp and expiration threshold, ensuring they expire and are hard-deleted together, preventing orphaned child records.
+    2. Delegates to `purge_expired_records!(batch_size)` to eager-load the host Rails application models (preventing Zeitwerk lazy-load gaps), identify expired records via the `.expired` scope, and hard-delete them and their cascading dependent associations in batches.
+  - *Relational Integrity & Constraint Protection*: Bottom-up recursive cascading deletes are performed first for associations marked as `:destroy`, `:delete_all`, or `:soft_delete`. For `:nullify` configurations, foreign key values are updated to `nil`, falling back to cascading deletion if the column contains a database-level `NOT NULL` constraint.
 
 ### 6.11 `lib/active_record/undo/purge_job.rb` (Background Task Worker)
 

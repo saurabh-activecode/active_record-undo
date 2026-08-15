@@ -246,7 +246,7 @@ ActiveRecord::Undo::Purger.purge_expired!(batch_size: 1000)
 ```
 
 > [!NOTE]
-> **Relational Integrity & Orphan Prevention**: Because the retention period is globally unified, parent and child records soft-deleted together share the exact same deletion timestamp and expiration threshold. Therefore, when the purger runs, both parent and child records expire and are hard-deleted in the same run, completely preventing the creation of orphaned records in your database.
+> **Relational Integrity & Constraint Protection**: To prevent database-level foreign key constraint failures (e.g. `FOREIGN KEY constraint failed`), `Purger` dynamically resolves dependent associations (such as `dependent: :destroy`, `dependent: :delete_all`, or `dependent: :soft_delete`) and recursively purges associated child records bottom-up before deleting the parent record. For associations configured with `dependent: :nullify`, it nullifies the foreign key (or cascades the deletion if the foreign key column is database-restricted to be `NOT NULL`).
 
 #### ActiveJob Background Job
 The gem provides an ActiveJob class that calls the Purger service:
