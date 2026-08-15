@@ -116,6 +116,60 @@ RSpec.describe ActiveRecord::Undo::Purger do
         expect(ActiveRecord::Undo::UndoLog.count).to eq(0)
       end
     end
+
+    context 'with cascading dependent associations' do
+      before do
+        ActiveRecord::Undo.config.retention_period = 30.days
+      end
+
+      it 'purges children configured with dependent destroy/delete_all when parent is purged, ' \
+         'and nullifies children configured with nullify' do
+        post = Post.create!(title: 'Cascading Post')
+        comment = Comment.create!(body: 'Child Comment', post: post)
+        delete_all_comment = Comment.create!(body: 'Child Comment 2', post: post)
+        like = Like.create!(post: post)
+
+        # Soft delete parent and cascade-enabled children
+        post.soft_delete!
+
+        # Set parent and child deletion time back to be expired
+        post.update_columns(deleted_at: 40.days.ago)
+        comment.update_columns(deleted_at: 40.days.ago)
+        delete_all_comment.update_columns(deleted_at: 40.days.ago)
+
+        ActiveRecord::Undo::Purger.purge_expired!
+
+        # Parent and cascading child records are purged
+        expect(Post.exists?(post.id)).to be false
+        expect(Comment.exists?(comment.id)).to be false
+        expect(Comment.exists?(delete_all_comment.id)).to be false
+
+        # Nullified child records have their foreign key set to nil
+        expect(like.reload.post_id).to be_nil
+      end
+
+      it 'purges children configured with dependent nullify if the foreign key column is non-nullable' do
+        post = Post.create!(title: 'Cascading Post')
+        like = Like.create!(post: post)
+
+        # Mock Like post_id column to be non-nullable by replacing it in the columns_hash stub
+        mock_column = double('Column', null: false)
+        allow(Like).to receive(:columns_hash).and_return(
+          Like.columns_hash.merge('post_id' => mock_column)
+        )
+
+        post.soft_delete!
+        post.update_columns(deleted_at: 40.days.ago)
+
+        ActiveRecord::Undo::Purger.purge_expired!
+
+        # Parent is purged
+        expect(Post.exists?(post.id)).to be false
+
+        # Child is also purged instead of nullified
+        expect(Like.exists?(like.id)).to be false
+      end
+    end
   end
 
   describe 'expired scope and predicate' do

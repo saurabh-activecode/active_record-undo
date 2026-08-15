@@ -37,11 +37,22 @@ module ActiveRecord
       end
 
       def undoable_models
+        eager_load_rails!
         models = registered_models.to_a
         if defined?(ActiveRecord::Base)
           models += ActiveRecord::Base.descendants.select { |m| m.respond_to?(:undoable_column) }
         end
         models.uniq
+      end
+
+      private
+
+      def eager_load_rails!
+        return unless defined?(Rails) && Rails.application
+
+        Rails.application.eager_load!
+      rescue StandardError
+        # Safe fallback if Rails eager loading fails in test environments
       end
     end
   end
