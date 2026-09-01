@@ -14,6 +14,11 @@ module ActiveRecord
           end
         end
       end
+
+      rake_tasks do
+        path = root.join('lib', 'tasks', 'active_record_undo_tasks.rake')
+        load path if File.exist?(path)
+      end
     end
   end
 end

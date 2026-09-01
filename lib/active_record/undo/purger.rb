@@ -17,11 +17,11 @@ module ActiveRecord
             ctx_tenant = ActiveRecord::Undo.config.current_tenant_method&.call
             ctx_tenant ||= ActiveRecord::Undo.current_tenant
             if ctx_tenant
-              if ctx_tenant.is_a?(ActiveRecord::Base)
-                scope = scope.where(tenant_type: ctx_tenant.class.name, tenant_id: ctx_tenant.id)
-              else
-                scope = scope.where(tenant_id: ctx_tenant)
-              end
+              scope = if ctx_tenant.is_a?(ActiveRecord::Base)
+                        scope.where(tenant_type: ctx_tenant.class.name, tenant_id: ctx_tenant.id)
+                      else
+                        scope.where(tenant_id: ctx_tenant)
+                      end
             end
 
             log_ids = scope.limit(batch_size).pluck(:id)

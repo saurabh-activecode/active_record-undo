@@ -9,11 +9,15 @@ rescue LoadError => e
         "Please add 'activerecord' to your Gemfile. (Original error: #{e.message})"
 end
 
+require 'set'
 require_relative 'undo/version'
 require_relative 'undo/engine' if defined?(Rails::Engine)
+require_relative 'undo/configuration'
 require_relative 'undo/model_extension'
 require_relative 'undo/undo_log'
 require_relative 'undo/undo_log_item'
+require_relative 'undo/purger'
+require_relative 'undo/purge_job'
 
 module ActiveRecord
   module Undo

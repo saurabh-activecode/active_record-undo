@@ -71,6 +71,18 @@ RSpec.describe ActiveRecord::Undo do
       expect(comment_2.reload.soft_deleted?).to be true
     end
 
+    it 'sets exactly the same soft_delete timestamp for the parent and all cascaded children' do
+      post.soft_delete!
+
+      parent_timestamp = post.reload.deleted_at
+      comment_1_timestamp = comment_1.reload.deleted_at
+      comment_2_timestamp = comment_2.reload.deleted_at
+
+      expect(parent_timestamp).to be_present
+      expect(comment_1_timestamp).to eq(parent_timestamp)
+      expect(comment_2_timestamp).to eq(parent_timestamp)
+    end
+
     it 'creates an UndoLog with UndoLogItems for all affected records' do
       expect do
         post.soft_delete!
@@ -198,13 +210,26 @@ RSpec.describe ActiveRecord::Undo do
       expect(comment.reload.soft_deleted?).to be false
     end
 
+    it 'automatically reloads the record in-memory when restore! is called directly' do
+      post.soft_delete!
+      expect(post.reload.soft_deleted?).to be true
+
+      post.restore!
+
+      # Should be updated in-memory directly without calling reload
+      expect(post.soft_deleted?).to be false
+      expect(post.deleted_at).to be_nil
+    end
+
     it 'falls back to simple restore if no UndoLogItem exists' do
       post.update_columns(deleted_at: Time.current)
       expect(post.reload.soft_deleted?).to be true
 
       post.restore!
 
-      expect(post.reload.soft_deleted?).to be false
+      # Verified auto-reloaded in-memory state
+      expect(post.soft_deleted?).to be false
+      expect(post.deleted_at).to be_nil
     end
   end
 

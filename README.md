@@ -18,6 +18,7 @@ Unlike conventional soft-deletion gems, `active_record-undo` automatically captu
 - 📦 **Polymorphic Tracking:** Records deletion events via native `UndoLog` and `UndoLogItem` models—no messy JSON payload parsing required.
 - 🚂 **Zero Generator Setup:** Built on top of `Rails::Engine`. Migrations automatically hook into `rails db:migrate`.
 - 🔍 **Default Scopes & Helpers:** Provides `.kept`, `.soft_deleted`, `#soft_deleted?`, and `#undoable?` query methods out of the box.
+- 🧹 **Automatic Expiration & Purging:** Configurable global retention window with automated background purging (`PurgeJob` and Rake task) to clean up old soft-deleted records and logs.
 
 ---
 
@@ -159,11 +160,11 @@ To restore a deleted object tree, you can invoke `restore!` either on the corres
 Calling `restore!` directly on the soft-deleted model automatically resolves its latest deletion event log, performs the cascading restore, and cleans up the log database rows:
 
 ```ruby
-# Restores the post and all comments deleted in the same batch
+# Restores the post and all comments deleted in the same batch (automatically reloads in-memory)
 post.restore!
 
-post.reload.soft_deleted? # => false
-post.comments.count       # => 2
+post.soft_deleted?  # => false
+post.comments.count # => 2
 ```
 
 #### Option B: Restore from the `UndoLog`
