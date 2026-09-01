@@ -39,20 +39,20 @@ graph TD
 
 ### Component Summary
 
-| Component                      | File Path                                                      | Class / Module       | Core Responsibility                                                                                                      |
-| :----------------------------- | :------------------------------------------------------------- | :------------------- | :----------------------------------------------------------------------------------------------------------------------- |
-| **Main Hook**                  | `lib/active_record/undo.rb`                                    | `ActiveRecord::Undo` | Hooks into `ActiveSupport.on_load(:active_record)`                                                                       |
-| **Model Extension**            | `lib/active_record/undo/model_extension.rb`                    | `ModelExtension`     | Injects DSL (`acts_as_undoable`), scopes (`kept`, `soft_deleted`), and methods (`soft_delete!`, `undoable?`, `restore!`) |
-| **Cascade Engine**             | `lib/active_record/undo/cascade_handler.rb`                    | `CascadeHandler`     | Inspects ActiveRecord reflections (`reflections`) and executes DFS traversal                                             |
-| **Cascade Association Finder** | `lib/active_record/undo/cascade_handler/association_finder.rb` | `AssociationFinder`  | Resolves which records should cascade based on dependency configuration                                                  |
-| **Cascade Record Updater**     | `lib/active_record/undo/cascade_handler/record_updater.rb`     | `RecordUpdater`      | Updates the database timestamps directly bypassing callbacks                                                             |
-| **Audit Log Parent**           | `lib/active_record/undo/undo_log.rb`                           | `UndoLog`            | Represents the top-level deletion event and manages atomic batch restoration                                             |
-| **Audit Log Child**            | `lib/active_record/undo/undo_log_item.rb`                      | `UndoLogItem`        | Maps polymorphic targets (`item_type`, `item_id`) to original deleted entities                                           |
-| **Engine Link**                | `lib/active_record/undo/engine.rb`                             | `Engine`             | Appends `db/migrate/` directly to host app migration paths                                                               |
-| **Configuration**              | `lib/active_record/undo/configuration.rb`                      | `Configuration`      | Houses retention_period settings                                                                                         |
-| **Purger Service**             | `lib/active_record/undo/purger.rb`                             | `Purger`             | Deletes expired UndoLog/Items and soft-deleted model records in batches                                                  |
-| **Purge Job**                  | `lib/active_record/undo/purge_job.rb`                          | `PurgeJob`           | ActiveJob background runner invoking Purger                                                                              |
-| **Rake Task**                  | `lib/active_record/undo/tasks/purge.rake`                      | Rake Task            | Exposes `active_record_undo:purge_expired` command                                                                       |
+| Component                      | File Path                                                      | Class / Module       | Core Responsibility                                                                                                                    |
+| :----------------------------- | :------------------------------------------------------------- | :------------------- | :------------------------------------------------------------------------------------------------------------------------------------- |
+| **Main Hook & Context**        | `lib/active_record/undo.rb`                                    | `ActiveRecord::Undo` | Hooks into `ActiveSupport.on_load(:active_record)`, manages ambient thread context (`whodunnit`, `current_tenant`), and defines errors |
+| **Model Extension**            | `lib/active_record/undo/model_extension.rb`                    | `ModelExtension`     | Injects DSL (`acts_as_undoable`), scopes (`kept`, `soft_deleted`), and methods (`soft_delete!`, `undoable?`, `restore!`)               |
+| **Cascade Engine**             | `lib/active_record/undo/cascade_handler.rb`                    | `CascadeHandler`     | Inspects ActiveRecord reflections (`reflections`) and executes DFS traversal                                                           |
+| **Cascade Association Finder** | `lib/active_record/undo/cascade_handler/association_finder.rb` | `AssociationFinder`  | Resolves which records should cascade based on dependency configuration                                                                |
+| **Cascade Record Updater**     | `lib/active_record/undo/cascade_handler/record_updater.rb`     | `RecordUpdater`      | Updates the database timestamps directly bypassing callbacks                                                                           |
+| **Audit Log Parent**           | `lib/active_record/undo/undo_log.rb`                           | `UndoLog`            | Represents the top-level deletion event and manages atomic batch restoration, tenancy, and user attribution                            |
+| **Audit Log Child**            | `lib/active_record/undo/undo_log_item.rb`                      | `UndoLogItem`        | Maps polymorphic targets (`item_type`, `item_id`) to original deleted entities                                                         |
+| **Engine Link**                | `lib/active_record/undo/engine.rb`                             | `Engine`             | Appends `db/migrate/` directly to host app migration paths                                                                             |
+| **Configuration**              | `lib/active_record/undo/configuration.rb`                      | `Configuration`      | Houses retention_period, current_user_method, and current_tenant_method settings                                                       |
+| **Purger Service**             | `lib/active_record/undo/purger.rb`                             | `Purger`             | Deletes expired UndoLog/Items and soft-deleted model records in batches, scoped to tenant context when present                         |
+| **Purge Job**                  | `lib/active_record/undo/purge_job.rb`                          | `PurgeJob`           | ActiveJob background runner invoking Purger                                                                                            |
+| **Rake Task**                  | `lib/active_record/undo/tasks/purge.rake`                      | Rake Task            | Exposes `active_record_undo:purge_expired` command                                                                                     |
 
 ---
 
@@ -62,9 +62,15 @@ graph TD
 erDiagram
     UNDO_LOGS ||--|{ UNDO_LOG_ITEMS : "has_many"
     UNDO_LOG_ITEMS }|--|| TARGET_MODEL : "belongs_to (polymorphic)"
+    UNDO_LOGS }o--o| WHODUNNIT_MODEL : "belongs_to (polymorphic)"
+    UNDO_LOGS }o--o| TENANT_MODEL : "belongs_to (polymorphic)"
 
     UNDO_LOGS {
         bigint id PK
+        string whodunnit_type "optional"
+        bigint whodunnit_id "optional"
+        string tenant_type "optional"
+        bigint tenant_id "optional"
         datetime created_at
         datetime updated_at
       }
@@ -179,12 +185,14 @@ sequenceDiagram
 4. **Bypassing Callbacks:** Soft-deletion updates use `update_columns`. This executes a direct SQL `UPDATE` query without firing standard ActiveRecord persistence callbacks (`save`, `validate`), preventing unintended side effects during soft deletes.
 5. **Unscoped Model Resolution:** `#restore_item!` uses `klass.unscoped.find_by(id: item_id)` to locate records. This guarantees records are retrieved even when models define default scopes that filter out soft-deleted records.
 6. **Class Inheritance Security Check:** When constantizing stored class strings, the gem validates that target models inherit from `ActiveRecord::Base` to prevent arbitrary non-model constant manipulation.
+7. **Tenant Matching Verification:** During `#restore!`, if `UndoLog` is associated with a tenant, the current tenant context is verified against the log's tenant before initiating restoration, raising `ActiveRecord::Undo::SecurityError` on mismatch to prevent cross-tenant data restores.
+8. **User Attribution Transparency:** `#soft_delete!` and `#restore!` support transparent user tracking via explicit keyword arguments or ambient context resolution (`Current.user` / Thread context).
 
 ---
 
 ## 6. Method-by-Method Implementation Reference
 
-### 6.1 `lib/active_record/undo.rb` (Entrypoint)
+### 6.1 `lib/active_record/undo.rb` (Entrypoint & Context)
 
 * **`require 'active_record'` Loader Check**
   * *Function*: Safely imports ActiveRecord. If ActiveRecord is not in the load path, it catches the `LoadError` and throws a detailed error instructing the developer to add `activerecord` to their `Gemfile`.
@@ -192,6 +200,12 @@ sequenceDiagram
   * *Function*: Detects if `ActiveSupport` is loaded:
     * If present, registers `ActiveSupport.on_load(:active_record)` to inject the extension module when ActiveRecord boots.
     * If absent (e.g. running in simple Ruby scripts), directly includes `ModelExtension` into `ActiveRecord::Base` as a fallback.
+* **`whodunnit` / `whodunnit=`**
+  * *Function*: Thread/Fiber-safe accessor for the active actor performing deletions or restorations.
+* **`current_tenant` / `current_tenant=`**
+  * *Function*: Thread/Fiber-safe accessor for the active tenant context.
+* **`SecurityError` Exception Class**
+  * *Function*: Custom error inheriting from `ActiveRecord::Undo::Error`, raised when a cross-tenant restoration attempt or security violation occurs.
 
 ### 6.2 `lib/active_record/undo/engine.rb` (Rails Integration)
 

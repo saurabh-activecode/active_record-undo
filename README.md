@@ -14,6 +14,8 @@ Unlike conventional soft-deletion gems, `active_record-undo` automatically captu
 - 🔄 **Cascading Soft Deletes:** Soft deletes parent models along with dependent associations (`dependent: :destroy` / `:delete_all`).
 - ⏪ **Atomic Restores:** Reverses soft deletion for an entire object tree (`undo_log.restore!` or `record.restore!`) within a single database transaction.
 - 🔍 **Restoration Verification:** Provides `#undoable?` to check if a record is soft-deleted and has a valid undo log entry available for restoration.
+- 👤 **User Attribution (`whodunnit`):** Tracks who initiated soft deletions and restores automatically via ambient context (e.g. `Current.user`) or explicit arguments.
+- 🏢 **Multi-Tenant Isolation:** Scopes deletion audit logs to specific tenants/accounts and enforces strict tenant matching security on restoration.
 - ⚙️ **Configurable Columns:** Supports custom soft-delete columns (e.g., `:archived_at`, `:discarded_at`) per model while defaulting to `:deleted_at`.
 - 📦 **Polymorphic Tracking:** Records deletion events via native `UndoLog` and `UndoLogItem` models—no messy JSON payload parsing required.
 - 🚂 **Zero Generator Setup:** Built on top of `Rails::Engine`. Migrations automatically hook into `rails db:migrate`.
@@ -137,6 +139,7 @@ end
 ```
 
 `#undoable?` returns `false` if:
+
 - The record is currently active (not soft deleted).
 - The record was soft deleted manually via direct SQL/column updates without generating an undo log.
 - The corresponding `UndoLog` record was purged or already restored.
@@ -375,10 +378,12 @@ ActiveRecord::Undo::Purger.purge_expired!
 
 ## Error Handling
 
-To ensure database integrity and provide clear debugging context, the gem raises an `ActiveRecord::Undo::Error` in the following scenarios:
-- **Missing Column at Runtime:** If the configured soft-delete column is missing from the database table when calling `soft_delete!` or `restore!`.
-- **Missing Model Class:** If a model class has been renamed or deleted, preventing the polymorphic log items from finding the target class during restore.
-- **Missing Column on Target Class:** If a model class exists but no longer has the target soft-delete column during restore.
+To ensure database integrity and provide clear debugging context, the gem raises errors in the following scenarios:
+
+- **Missing Column at Runtime (`ActiveRecord::Undo::Error`):** If the configured soft-delete column is missing from the database table when calling `soft_delete!` or `restore!`.
+- **Missing Model Class (`ActiveRecord::Undo::Error`):** If a model class has been renamed or deleted, preventing the polymorphic log items from finding the target class during restore.
+- **Missing Column on Target Class (`ActiveRecord::Undo::Error`):** If a model class exists but no longer has the target soft-delete column during restore.
+- **Cross-Tenant Restoration Attempt (`ActiveRecord::Undo::SecurityError`):** If attempting to restore a record whose `UndoLog` belongs to a tenant different from the current context tenant.
 
 ---
 
