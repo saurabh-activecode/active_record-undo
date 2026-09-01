@@ -49,7 +49,7 @@ RSpec.describe 'Multi-Tenant Isolation & User Attribution' do
 
     it 'sets ActiveRecord::Undo.whodunnit during restore! execution' do
       post = Post.create!(title: 'Restore Attribution Post')
-      undo_log = post.soft_delete!(whodunnit: user_a)
+      post.soft_delete!(whodunnit: user_a)
 
       expect(ActiveRecord::Undo.whodunnit).to be_nil
 
@@ -159,7 +159,7 @@ RSpec.describe 'Multi-Tenant Isolation & User Attribution' do
       # Backdate logs so they are considered expired
       log_1.update_columns(created_at: 40.days.ago)
       log_2.update_columns(created_at: 40.days.ago)
-      
+
       # Backdate soft-deleted posts
       Post.unscoped.update_all(deleted_at: 40.days.ago)
     end
@@ -167,10 +167,10 @@ RSpec.describe 'Multi-Tenant Isolation & User Attribution' do
     it 'purges logs and records only for the current tenant when set' do
       ActiveRecord::Undo.current_tenant = account_1
 
-      expect {
+      # Only log_1 gets purged
+      expect do
         ActiveRecord::Undo::Purger.purge_expired!
-      }.to change { ActiveRecord::Undo::UndoLog.count }.by(-1) # Only log_1 gets purged
-
+      end.to change { ActiveRecord::Undo::UndoLog.count }.by(-1)
       expect(ActiveRecord::Undo::UndoLog.exists?(log_2.id)).to be true
       expect(Post.unscoped.exists?(title: 'P2')).to be true
       expect(Post.unscoped.exists?(title: 'P1')).to be false
@@ -179,9 +179,9 @@ RSpec.describe 'Multi-Tenant Isolation & User Attribution' do
     it 'purges everything across all tenants when no tenant is set' do
       ActiveRecord::Undo.current_tenant = nil
 
-      expect {
+      expect do
         ActiveRecord::Undo::Purger.purge_expired!
-      }.to change { ActiveRecord::Undo::UndoLog.count }.by(-2)
+      end.to change { ActiveRecord::Undo::UndoLog.count }.by(-2)
 
       expect(Post.unscoped.exists?(title: 'P1')).to be false
       expect(Post.unscoped.exists?(title: 'P2')).to be false
