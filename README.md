@@ -32,19 +32,19 @@ gem "active_record-undo"
 Then execute:
 
 ```bash
-$ bundle install
+bundle install
 ```
 
 Run database migrations. The gem automatically appends its tables (`undo_logs` and `undo_log_items`) to your app's migration path:
 
 ```bash
-$ rails db:migrate
+rails db:migrate
 ```
 
 *(Optional)* If you need to customize the migration, copy it to your host application's `db/migrate` folder:
 
 ```bash
-$ rails active_record_undo:install:migrations
+rails active_record_undo:install:migrations
 ```
 
 ---
@@ -136,9 +136,9 @@ end
 ```
 
 `#undoable?` returns `false` if:
-* The record is currently active (not soft deleted).
-* The record was soft deleted manually via direct SQL/column updates without generating an undo log.
-* The corresponding `UndoLog` record was purged or already restored.
+- The record is currently active (not soft deleted).
+- The record was soft deleted manually via direct SQL/column updates without generating an undo log.
+- The corresponding `UndoLog` record was purged or already restored.
 
 ### Inspect Deletion Logs
 
@@ -155,6 +155,7 @@ undo_log.undo_log_items.map(&:item)
 To restore a deleted object tree, you can invoke `restore!` either on the corresponding `UndoLog` or directly on the model instance itself:
 
 #### Option A: Restore from the model instance (Recommended)
+
 Calling `restore!` directly on the soft-deleted model automatically resolves its latest deletion event log, performs the cascading restore, and cleans up the log database rows:
 
 ```ruby
@@ -166,6 +167,7 @@ post.comments.count       # => 2
 ```
 
 #### Option B: Restore from the `UndoLog`
+
 ```ruby
 # Reverses soft deletes for the post and comments
 undo_log.restore!
@@ -199,6 +201,167 @@ Post.unscoped.where(id: 1)
 
 ---
 
+## Expiration, Retention & Auto-Purging
+
+To prevent database bloat, `active_record-undo` supports automated retention periods, expiration checks, and background purging for both soft-deleted records and their associated `UndoLog` audit entries.
+
+### 1. Global Configuration
+
+You can configure a global retention period inside a Rails initializer:
+
+```ruby
+# config/initializers/active_record_undo.rb
+ActiveRecord::Undo.configure do |config|
+  # Default retention period for all soft-deleted records and undo logs (defaults to 30.days)
+  config.retention_period = 30.days
+end
+```
+
+If `retention_period` is set to `nil`, records and logs will never expire.
+
+### 2. Expiration Scopes & Helpers
+
+The gem provides query scopes and instance predicate helpers:
+
+- **Model `.expired` Scope**: Returns soft-deleted records older than the configured retention period.
+
+  ```ruby
+  Post.expired # => ActiveRecord::Relation of posts soft-deleted > 30 days ago
+  ```
+
+- **Model `#expired?` Predicate**: Checks if a record is soft-deleted and past the retention period.
+
+  ```ruby
+  post.expired? # => true/false
+  ```
+
+- **`UndoLog.expired` Scope**: Returns undo log entries older than the retention period.
+
+  ```ruby
+  ActiveRecord::Undo::UndoLog.expired # => logs created > 30 days ago
+  ```
+
+### 3. Background Purging
+
+#### Purger Service
+
+The `ActiveRecord::Undo::Purger` class performs hard SQL deletes on expired records and logs using `delete_all` (bypassing callbacks and validations for efficiency):
+
+```ruby
+# Purge all expired soft-deleted records and undo logs in batches
+ActiveRecord::Undo::Purger.purge_expired!(batch_size: 1000)
+```
+
+> [!NOTE]
+> **Relational Integrity & Constraint Protection**: To prevent database-level foreign key constraint failures (e.g. `FOREIGN KEY constraint failed`), `Purger` dynamically resolves dependent associations (such as `dependent: :destroy`, `dependent: :delete_all`, or `dependent: :soft_delete`) and recursively purges associated child records bottom-up before deleting the parent record. For associations configured with `dependent: :nullify`, it nullifies the foreign key (or cascades the deletion if the foreign key column is database-restricted to be `NOT NULL`).
+
+#### ActiveJob Background Job
+
+The gem provides an ActiveJob class that calls the Purger service:
+
+```ruby
+# Enqueue the purge job to run in the background
+ActiveRecord::Undo::PurgeJob.perform_later(batch_size: 1000)
+```
+
+#### Engine Rake Task
+
+You can run the purge task via Rake. This task is automatically loaded into host applications:
+
+```bash
+# Run with the default batch size of 1000
+$ rails active_record_undo:purge_expired
+
+# Run with a custom batch size
+$ BATCH_SIZE=500 rails active_record_undo:purge_expired
+```
+
+---
+
+## Multi-Tenant Isolation & User Attribution
+
+To support enterprise-grade Rails applications, `active_record-undo` provides native mechanisms for multi-tenant data isolation and user auditing.
+
+### 1. Database Setup
+
+Add a migration to introduce polymorphic tenant and user attribution columns to the `undo_logs` table:
+
+```ruby
+class AddTenantAndUserAttributionToUndoLogs < ActiveRecord::Migration[7.0]
+  def change
+    change_table :undo_logs, bulk: true do |t|
+      t.string :whodunnit_type, null: true
+      t.bigint :whodunnit_id, null: true
+      t.string :tenant_type, null: true
+      t.bigint :tenant_id, null: true
+    end
+
+    add_index :undo_logs, [:whodunnit_type, :whodunnit_id], name: 'index_undo_logs_on_whodunnit'
+    add_index :undo_logs, [:tenant_type, :tenant_id], name: 'index_undo_logs_on_tenant'
+  end
+end
+```
+
+### 2. Global Configuration
+
+Configure global procs (e.g. evaluating `CurrentAttributes`) in your initializer:
+
+```ruby
+# config/initializers/active_record_undo.rb
+ActiveRecord::Undo.configure do |config|
+  # Callable accessors to automatically resolve context
+  config.current_user_method   = -> { Current.user }
+  config.current_tenant_method = -> { Current.account }
+end
+```
+
+### 3. Usage & Thread Context
+
+You can set thread/fiber context explicitly:
+
+```ruby
+ActiveRecord::Undo.whodunnit = current_user
+ActiveRecord::Undo.current_tenant = current_account
+```
+
+Or pass values explicitly as parameters to model operations:
+
+```ruby
+# Capture user and tenant during deletion
+post.soft_delete!(whodunnit: current_user, tenant: current_account)
+
+# Track who performed the restoration
+post.restore!(whodunnit: current_user)
+```
+
+### 4. Tenant Matching Security
+
+When restoring a log that belongs to a tenant, the gem verifies that the initiating context's tenant matches the log's tenant. If there is a mismatch (or if no tenant is set in the context), the gem raises an `ActiveRecord::Undo::SecurityError`:
+
+```ruby
+ActiveRecord::Undo.current_tenant = wrong_account
+post.restore! # => raises ActiveRecord::Undo::SecurityError
+```
+
+### 5. Query Scopes & Purging
+
+Query logs scoped to a specific user or tenant:
+
+```ruby
+ActiveRecord::Undo::UndoLog.for_whodunnit(user)
+ActiveRecord::Undo::UndoLog.for_tenant(account)
+```
+
+If `current_tenant` is set in the context when running the `Purger`, purging of both logs and model records will be strictly scoped to that tenant:
+
+```ruby
+# Scoped purge for account_1
+ActiveRecord::Undo.current_tenant = account_1
+ActiveRecord::Undo::Purger.purge_expired!
+```
+
+---
+
 ## How It Works
 
 1. **Cascade Inspection:** When `soft_delete!` is called, `ActiveRecord::Undo::CascadeHandler` reflects on `has_many`, `has_one`, and `belongs_to` associations configured with `dependent: :destroy` or `:delete_all`.
@@ -212,9 +375,9 @@ Post.unscoped.where(id: 1)
 ## Error Handling
 
 To ensure database integrity and provide clear debugging context, the gem raises an `ActiveRecord::Undo::Error` in the following scenarios:
-* **Missing Column at Runtime:** If the configured soft-delete column is missing from the database table when calling `soft_delete!` or `restore!`.
-* **Missing Model Class:** If a model class has been renamed or deleted, preventing the polymorphic log items from finding the target class during restore.
-* **Missing Column on Target Class:** If a model class exists but no longer has the target soft-delete column during restore.
+- **Missing Column at Runtime:** If the configured soft-delete column is missing from the database table when calling `soft_delete!` or `restore!`.
+- **Missing Model Class:** If a model class has been renamed or deleted, preventing the polymorphic log items from finding the target class during restore.
+- **Missing Column on Target Class:** If a model class exists but no longer has the target soft-delete column during restore.
 
 ---
 
@@ -223,20 +386,20 @@ To ensure database integrity and provide clear debugging context, the gem raises
 After cloning the repository, install dependencies:
 
 ```bash
-$ bundle install
+bundle install
 ```
 
 Run test suite via RSpec:
 
 ```bash
-$ bundle exec rspec
+bundle exec rspec
 ```
 
 ---
 
 ## Contributing
 
-Bug reports and pull requests are welcome on GitHub at https://github.com/saurabh-activecode/active_record-undo.
+Bug reports and pull requests are welcome on GitHub at <https://github.com/saurabh-activecode/active_record-undo>.
 
 ## License
 

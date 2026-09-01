@@ -18,6 +18,56 @@ require_relative 'undo/undo_log_item'
 module ActiveRecord
   module Undo
     class Error < StandardError; end
+    class SecurityError < Error; end
+
+    class << self
+      def whodunnit
+        Thread.current[:active_record_undo_whodunnit]
+      end
+
+      def whodunnit=(value)
+        Thread.current[:active_record_undo_whodunnit] = value
+      end
+
+      def current_tenant
+        Thread.current[:active_record_undo_current_tenant]
+      end
+
+      def current_tenant=(value)
+        Thread.current[:active_record_undo_current_tenant] = value
+      end
+
+      def config
+        @config ||= Configuration.new
+      end
+
+      def configure
+        yield(config)
+      end
+
+      def registered_models
+        @registered_models ||= Set.new
+      end
+
+      def undoable_models
+        eager_load_rails!
+        models = registered_models.to_a
+        if defined?(ActiveRecord::Base)
+          models += ActiveRecord::Base.descendants.select { |m| m.respond_to?(:undoable_column) }
+        end
+        models.uniq
+      end
+
+      private
+
+      def eager_load_rails!
+        return unless defined?(Rails) && Rails.application
+
+        Rails.application.eager_load!
+      rescue StandardError
+        # Safe fallback if Rails eager loading fails in test environments
+      end
+    end
   end
 end
 
