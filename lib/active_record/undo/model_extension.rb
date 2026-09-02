@@ -2,6 +2,8 @@
 # frozen_string_literal: true
 
 require_relative 'cascade_handler'
+require_relative 'model_extension/attribution_helper'
+require_relative 'model_extension/tenant_verification'
 
 module ActiveRecord
   module Undo
@@ -49,6 +51,9 @@ module ActiveRecord
       end
 
       module InstanceMethods
+        include AttributionHelper
+        include TenantVerification
+
         def soft_deleted?
           public_send(self.class.undoable_column).present?
         end
@@ -72,28 +77,24 @@ module ActiveRecord
           )
         end
 
-        def soft_delete!
+        def soft_delete!(whodunnit: nil, tenant: nil)
           ensure_undoable_column_exists!
           return false if soft_deleted?
 
-          undo_log = nil
-          timestamp = Time.current
-
-          transaction do
-            undo_log = ActiveRecord::Undo::UndoLog.create!
-            soft_delete_cascade_internal!(timestamp, undo_log)
-            undo_log.save!
-          end
-
-          undo_log
+          ActiveRecord::Undo.verify_configured_context!
+          attrs = build_undo_log_attributes(whodunnit, tenant)
+          execute_soft_delete!(attrs)
         end
 
         # rubocop:disable Naming/PredicateMethod
-        def restore!
+        def restore!(whodunnit: nil)
           ensure_undoable_column_exists!
           return false unless soft_deleted?
 
-          restore_internally!(find_latest_undo_log_item)
+          ActiveRecord::Undo.verify_configured_context!
+          log_item = find_latest_undo_log_item
+          log_item ? restore_from_log!(log_item.undo_log, whodunnit) : direct_restore!
+
           reload
           true
         end
@@ -121,13 +122,39 @@ module ActiveRecord
           CascadeHandler.new(self).soft_delete_with_cascade!(timestamp, undo_log)
         end
 
-        def restore_internally!(log_item)
-          if log_item
-            log_item.undo_log.restore!
-          else
-            column_name = self.class.undoable_column
-            update_columns(column_name => nil, updated_at: Time.current)
+        def execute_soft_delete!(attrs)
+          transaction do
+            undo_log = ActiveRecord::Undo::UndoLog.create!(attrs)
+            soft_delete_cascade_internal!(Time.current, undo_log)
+            undo_log.save!
+            undo_log
           end
+        end
+
+        def restore_from_log!(undo_log, whodunnit)
+          verify_tenant_match!(undo_log) if undo_log_tenant_present?(undo_log)
+
+          actor = resolve_whodunnit(whodunnit)
+          with_whodunnit_context(actor) do
+            undo_log.restore!
+          end
+        end
+
+        def with_whodunnit_context(actor)
+          orig = ActiveRecord::Undo.whodunnit
+          ActiveRecord::Undo.whodunnit = actor
+          yield
+        ensure
+          ActiveRecord::Undo.whodunnit = orig
+        end
+
+        def undo_log_tenant_present?(undo_log)
+          undo_log && (undo_log.tenant_id.present? || undo_log.tenant_type.present?)
+        end
+
+        def direct_restore!
+          column_name = self.class.undoable_column
+          update_columns(column_name => nil, updated_at: Time.current)
         end
       end
     end

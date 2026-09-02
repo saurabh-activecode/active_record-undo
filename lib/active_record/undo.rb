@@ -22,8 +22,25 @@ require_relative 'undo/purge_job'
 module ActiveRecord
   module Undo
     class Error < StandardError; end
+    class SecurityError < Error; end
 
     class << self
+      def whodunnit
+        Thread.current[:active_record_undo_whodunnit]
+      end
+
+      def whodunnit=(value)
+        Thread.current[:active_record_undo_whodunnit] = value
+      end
+
+      def current_tenant
+        Thread.current[:active_record_undo_current_tenant]
+      end
+
+      def current_tenant=(value)
+        Thread.current[:active_record_undo_current_tenant] = value
+      end
+
       def config
         @config ||= Configuration.new
       end
@@ -43,6 +60,29 @@ module ActiveRecord
           models += ActiveRecord::Base.descendants.select { |m| m.respond_to?(:undoable_column) }
         end
         models.uniq
+      end
+
+      def verify_configured_context!
+        user_null = configured_method_nil?(config.current_user_method)
+        tenant_null = configured_method_nil?(config.current_tenant_method)
+        return unless user_null || tenant_null
+
+        raise_configured_context_error!(user_null, tenant_null)
+      end
+
+      def configured_method_nil?(method)
+        method.respond_to?(:call) && method.call.nil?
+      end
+
+      def raise_configured_context_error!(user_null, tenant_null)
+        msg = if user_null && tenant_null
+                'Configured current_user_method and current_tenant_method both returned nil.'
+              elsif user_null
+                'Configured current_user_method returned nil.'
+              else
+                'Configured current_tenant_method returned nil.'
+              end
+        raise ActiveRecord::Undo::SecurityError, msg
       end
 
       private

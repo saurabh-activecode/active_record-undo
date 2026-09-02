@@ -1,8 +1,12 @@
 # frozen_string_literal: true
 
+require_relative 'purger/reflection_helper'
+
 module ActiveRecord
   module Undo
     class Purger
+      extend ReflectionHelper
+
       class << self
         def purge_expired!(batch_size: 1000)
           purge_expired_logs!(batch_size)
@@ -13,12 +17,28 @@ module ActiveRecord
 
         def purge_expired_logs!(batch_size)
           loop do
-            log_ids = UndoLog.expired.limit(batch_size).pluck(:id)
+            log_ids = current_tenant_log_scope.limit(batch_size).pluck(:id)
             break if log_ids.empty?
 
             UndoLogItem.where(undo_log_id: log_ids).delete_all
             UndoLog.where(id: log_ids).delete_all
           end
+        end
+
+        def current_tenant_log_scope
+          scope = UndoLog.expired
+          ctx = current_tenant_context
+          return scope unless ctx
+
+          if ctx.is_a?(ActiveRecord::Base)
+            scope.where(tenant_type: ctx.class.name, tenant_id: ctx.id)
+          else
+            scope.where(tenant_id: ctx)
+          end
+        end
+
+        def current_tenant_context
+          ActiveRecord::Undo.config.current_tenant_method&.call || ActiveRecord::Undo.current_tenant
         end
 
         def purge_expired_records!(batch_size)
@@ -31,13 +51,40 @@ module ActiveRecord
         end
 
         def purge_model_expired_records!(model, batch_size)
-          primary_key = model.primary_key
+          pk = model.primary_key
           loop do
-            expired_ids = model.expired.limit(batch_size).pluck(primary_key)
+            expired_ids = scoped_model_expired(model).limit(batch_size).pluck(pk)
             break if expired_ids.empty?
 
             purge_records_with_cascade!(model, expired_ids, batch_size)
           end
+        end
+
+        def scoped_model_expired(model)
+          scope = model.expired
+          ctx = current_tenant_context
+          return scope unless ctx
+
+          apply_tenant_scope(scope, model, ctx)
+        end
+
+        def apply_tenant_scope(scope, model, ctx)
+          if model.column_names.include?('tenant_id')
+            apply_tenant_column_scope(scope, model, ctx)
+          elsif model.reflect_on_association(:tenant)
+            scope.where(tenant: ctx)
+          else
+            scope
+          end
+        end
+
+        def apply_tenant_column_scope(scope, model, ctx)
+          val = ctx.is_a?(ActiveRecord::Base) ? ctx.id : ctx
+          scope = scope.where(tenant_id: val)
+          if model.column_names.include?('tenant_type') && ctx.is_a?(ActiveRecord::Base)
+            scope = scope.where(tenant_type: ctx.class.name)
+          end
+          scope
         end
 
         def purge_records_with_cascade!(model, record_ids, batch_size)
@@ -73,33 +120,6 @@ module ActiveRecord
 
         def delete_records!(model, record_ids)
           model.unscoped.where(model.primary_key => record_ids).delete_all
-        end
-
-        def nullify_reflections(model)
-          model.reflections.values.select do |ref|
-            %i[has_many has_one].include?(ref.macro) &&
-              ref.options[:dependent] == :nullify &&
-              foreign_key_nullable?(ref)
-          end
-        end
-
-        def cascade_reflections(model)
-          model.reflections.values.select do |ref|
-            next false unless %i[has_many has_one].include?(ref.macro)
-
-            dependent = ref.options[:dependent]
-            %i[destroy soft_delete delete_all].include?(dependent) ||
-              non_nullable_nullify?(ref)
-          end
-        end
-
-        def non_nullable_nullify?(ref)
-          ref.options[:dependent] == :nullify && !foreign_key_nullable?(ref)
-        end
-
-        def foreign_key_nullable?(ref)
-          column = ref.klass.columns_hash[ref.foreign_key.to_s]
-          column.nil? || column.null
         end
       end
     end
