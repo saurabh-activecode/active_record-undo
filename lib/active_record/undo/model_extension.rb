@@ -2,6 +2,8 @@
 # frozen_string_literal: true
 
 require_relative 'cascade_handler'
+require_relative 'model_extension/attribution_helper'
+require_relative 'model_extension/tenant_verification'
 
 module ActiveRecord
   module Undo
@@ -49,6 +51,9 @@ module ActiveRecord
       end
 
       module InstanceMethods
+        include AttributionHelper
+        include TenantVerification
+
         def soft_deleted?
           public_send(self.class.undoable_column).present?
         end
@@ -76,42 +81,13 @@ module ActiveRecord
           ensure_undoable_column_exists!
           return false if soft_deleted?
 
-          resolved_whodunnit = whodunnit
-          resolved_whodunnit ||= ActiveRecord::Undo.config.current_user_method&.call
-          resolved_whodunnit ||= ActiveRecord::Undo.whodunnit
-
-          resolved_tenant = tenant
-          resolved_tenant ||= ActiveRecord::Undo.config.current_tenant_method&.call
-          resolved_tenant ||= ActiveRecord::Undo.current_tenant
-          resolved_tenant ||= self.tenant if respond_to?(:tenant)
-
-          log_attrs = {}
-          if resolved_whodunnit
-            if resolved_whodunnit.is_a?(ActiveRecord::Base)
-              log_attrs[:whodunnit] = resolved_whodunnit
-            else
-              log_attrs[:whodunnit_id] = resolved_whodunnit
-            end
-          end
-
-          if resolved_tenant
-            if resolved_tenant.is_a?(ActiveRecord::Base)
-              log_attrs[:tenant] = resolved_tenant
-            else
-              log_attrs[:tenant_id] = resolved_tenant
-            end
-          end
-
-          undo_log = nil
-          timestamp = Time.current
-
+          attrs = build_undo_log_attributes(whodunnit, tenant)
           transaction do
-            undo_log = ActiveRecord::Undo::UndoLog.create!(log_attrs)
-            soft_delete_cascade_internal!(timestamp, undo_log)
+            undo_log = ActiveRecord::Undo::UndoLog.create!(attrs)
+            soft_delete_cascade_internal!(Time.current, undo_log)
             undo_log.save!
+            undo_log
           end
-
-          undo_log
         end
 
         # rubocop:disable Naming/PredicateMethod
@@ -121,42 +97,9 @@ module ActiveRecord
 
           log_item = find_latest_undo_log_item
           if log_item
-            undo_log = log_item.undo_log
-            if undo_log && (undo_log.tenant_id.present? || undo_log.tenant_type.present?)
-              ctx_tenant = ActiveRecord::Undo.config.current_tenant_method&.call
-              ctx_tenant ||= ActiveRecord::Undo.current_tenant
-
-              if ctx_tenant.nil?
-                raise ActiveRecord::Undo::SecurityError,
-                      "Tenant mismatch: log belongs to tenant #{undo_log.tenant_type}##{undo_log.tenant_id}, " \
-                      'but current context tenant is nil.'
-              elsif ctx_tenant.is_a?(ActiveRecord::Base)
-                if undo_log.tenant_type != ctx_tenant.class.name || undo_log.tenant_id.to_s != ctx_tenant.id.to_s
-                  raise ActiveRecord::Undo::SecurityError,
-                        "Tenant mismatch: log belongs to tenant #{undo_log.tenant_type}##{undo_log.tenant_id}, " \
-                        "but current context tenant is #{ctx_tenant.class.name}##{ctx_tenant.id}."
-                end
-              elsif undo_log.tenant_id.to_s != ctx_tenant.to_s
-                raise ActiveRecord::Undo::SecurityError,
-                      "Tenant mismatch: log belongs to tenant #{undo_log.tenant_type}##{undo_log.tenant_id}, " \
-                      "but current context tenant is #{ctx_tenant}."
-              end
-            end
-
-            resolved_whodunnit = whodunnit
-            resolved_whodunnit ||= ActiveRecord::Undo.config.current_user_method&.call
-            resolved_whodunnit ||= ActiveRecord::Undo.whodunnit
-
-            original_whodunnit = ActiveRecord::Undo.whodunnit
-            begin
-              ActiveRecord::Undo.whodunnit = resolved_whodunnit
-              undo_log.restore!
-            ensure
-              ActiveRecord::Undo.whodunnit = original_whodunnit
-            end
+            restore_from_log!(log_item.undo_log, whodunnit)
           else
-            column_name = self.class.undoable_column
-            update_columns(column_name => nil, updated_at: Time.current)
+            direct_restore!
           end
 
           reload
@@ -186,13 +129,30 @@ module ActiveRecord
           CascadeHandler.new(self).soft_delete_with_cascade!(timestamp, undo_log)
         end
 
-        def restore_internally!(log_item)
-          if log_item
-            log_item.undo_log.restore!
-          else
-            column_name = self.class.undoable_column
-            update_columns(column_name => nil, updated_at: Time.current)
+        def restore_from_log!(undo_log, whodunnit)
+          verify_tenant_match!(undo_log) if undo_log_tenant_present?(undo_log)
+
+          actor = resolve_whodunnit(whodunnit)
+          with_whodunnit_context(actor) do
+            undo_log.restore!
           end
+        end
+
+        def with_whodunnit_context(actor)
+          orig = ActiveRecord::Undo.whodunnit
+          ActiveRecord::Undo.whodunnit = actor
+          yield
+        ensure
+          ActiveRecord::Undo.whodunnit = orig
+        end
+
+        def undo_log_tenant_present?(undo_log)
+          undo_log && (undo_log.tenant_id.present? || undo_log.tenant_type.present?)
+        end
+
+        def direct_restore!
+          column_name = self.class.undoable_column
+          update_columns(column_name => nil, updated_at: Time.current)
         end
       end
     end
