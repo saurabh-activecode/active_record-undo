@@ -128,6 +128,52 @@ RSpec.describe 'Multi-Tenant Isolation & User Attribution' do
       expect { post.restore! }.not_to raise_error
       expect(post.reload.soft_deleted?).to be false
     end
+
+    it 'raises ActiveRecord::Undo::SecurityError on restore! if record had a tenant but restore context has none' do
+      post = Post.create!(title: 'Tenant Post', tenant: account_1)
+      post.soft_delete!
+
+      # Initiating context has no tenant set
+      ActiveRecord::Undo.current_tenant = nil
+
+      expect { post.restore! }.to raise_error(
+        ActiveRecord::Undo::SecurityError,
+        /Tenant mismatch: log belongs to tenant Account##{account_1.id}, but current context tenant is nil\./
+      )
+    end
+
+    it 'allows restore! if tenant matches via config.current_tenant_method proc' do
+      post = Post.create!(title: 'Matching Proc Tenant Post', tenant: account_1)
+      post.soft_delete!
+
+      ActiveRecord::Undo.configure do |config|
+        config.current_tenant_method = -> { account_1 }
+      end
+
+      expect { post.restore! }.not_to raise_error
+      expect(post.reload.soft_deleted?).to be false
+    end
+
+    it 'raises ActiveRecord::Undo::SecurityError on restore! if tenant is mismatched via proc' do
+      post = Post.create!(title: 'Mismatch Proc Tenant Post', tenant: account_1)
+      post.soft_delete!
+
+      ActiveRecord::Undo.configure do |config|
+        config.current_tenant_method = -> { account_2 }
+      end
+
+      expect { post.restore! }.to raise_error(ActiveRecord::Undo::SecurityError, /Tenant mismatch/)
+    end
+
+    it 'allows restore! if tenant matches via scalar ID in context' do
+      post = Post.create!(title: 'Matching Scalar Tenant Post', tenant: account_1)
+      post.soft_delete!
+
+      ActiveRecord::Undo.current_tenant = account_1.id
+
+      expect { post.restore! }.not_to raise_error
+      expect(post.reload.soft_deleted?).to be false
+    end
   end
 
   describe 'Query Scopes' do
