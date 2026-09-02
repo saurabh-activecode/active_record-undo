@@ -81,13 +81,9 @@ module ActiveRecord
           ensure_undoable_column_exists!
           return false if soft_deleted?
 
+          ActiveRecord::Undo.verify_configured_context!
           attrs = build_undo_log_attributes(whodunnit, tenant)
-          transaction do
-            undo_log = ActiveRecord::Undo::UndoLog.create!(attrs)
-            soft_delete_cascade_internal!(Time.current, undo_log)
-            undo_log.save!
-            undo_log
-          end
+          execute_soft_delete!(attrs)
         end
 
         # rubocop:disable Naming/PredicateMethod
@@ -95,12 +91,9 @@ module ActiveRecord
           ensure_undoable_column_exists!
           return false unless soft_deleted?
 
+          ActiveRecord::Undo.verify_configured_context!
           log_item = find_latest_undo_log_item
-          if log_item
-            restore_from_log!(log_item.undo_log, whodunnit)
-          else
-            direct_restore!
-          end
+          log_item ? restore_from_log!(log_item.undo_log, whodunnit) : direct_restore!
 
           reload
           true
@@ -127,6 +120,15 @@ module ActiveRecord
 
         def soft_delete_cascade_internal!(timestamp, undo_log)
           CascadeHandler.new(self).soft_delete_with_cascade!(timestamp, undo_log)
+        end
+
+        def execute_soft_delete!(attrs)
+          transaction do
+            undo_log = ActiveRecord::Undo::UndoLog.create!(attrs)
+            soft_delete_cascade_internal!(Time.current, undo_log)
+            undo_log.save!
+            undo_log
+          end
         end
 
         def restore_from_log!(undo_log, whodunnit)

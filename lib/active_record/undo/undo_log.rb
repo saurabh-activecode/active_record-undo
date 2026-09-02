@@ -38,6 +38,8 @@ module ActiveRecord
 
       # Restores all records associated with this deletion batch
       def restore!
+        ActiveRecord::Undo.verify_configured_context!
+
         transaction do
           # Reverse order ensures child records are restored before or after parents as needed
           undo_log_items.reverse_each(&:restore_item!)

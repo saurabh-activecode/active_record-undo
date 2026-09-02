@@ -62,6 +62,29 @@ module ActiveRecord
         models.uniq
       end
 
+      def verify_configured_context!
+        user_null = configured_method_nil?(config.current_user_method)
+        tenant_null = configured_method_nil?(config.current_tenant_method)
+        return unless user_null || tenant_null
+
+        raise_configured_context_error!(user_null, tenant_null)
+      end
+
+      def configured_method_nil?(method)
+        method.respond_to?(:call) && method.call.nil?
+      end
+
+      def raise_configured_context_error!(user_null, tenant_null)
+        msg = if user_null && tenant_null
+                'Configured current_user_method and current_tenant_method both returned nil.'
+              elsif user_null
+                'Configured current_user_method returned nil.'
+              else
+                'Configured current_tenant_method returned nil.'
+              end
+        raise ActiveRecord::Undo::SecurityError, msg
+      end
+
       private
 
       def eager_load_rails!
