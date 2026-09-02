@@ -45,33 +45,6 @@ RSpec.describe ActiveRecord::Undo::Purger do
         expect(ActiveRecord::Undo::UndoLog.exists?(log_active.id)).to be true
         expect(ActiveRecord::Undo::UndoLogItem.where(undo_log_id: log_active.id).exists?).to be true
       end
-
-      it 'purges both parent and cascading child records at the same time, leaving no orphans' do
-        post = Post.create!(title: 'Orphan Prevention Test Post')
-        comment = Comment.create!(body: 'Child Comment', post: post)
-
-        # Soft delete post, cascading to comment
-        log = post.soft_delete!
-
-        # Set deletion timestamp to be expired
-        post.update_columns(deleted_at: 40.days.ago)
-        comment.update_columns(deleted_at: 40.days.ago)
-        log.update_columns(created_at: 40.days.ago)
-
-        # Verify they exist as soft-deleted before purging
-        expect(Post.soft_deleted.count).to eq(1)
-        expect(Comment.soft_deleted.count).to eq(1)
-
-        # Run purger
-        ActiveRecord::Undo::Purger.purge_expired!
-
-        # Verify parent and children are hard-deleted
-        expect(Post.exists?(post.id)).to be false
-        expect(Comment.exists?(comment.id)).to be false
-
-        # Verify no comments pointing to the post exist in the table (no orphans)
-        expect(Comment.unscoped.where(post_id: post.id).count).to eq(0)
-      end
     end
 
     context 'when retention period is nil' do
@@ -143,6 +116,9 @@ RSpec.describe ActiveRecord::Undo::Purger do
         expect(Post.exists?(post.id)).to be false
         expect(Comment.exists?(comment.id)).to be false
         expect(Comment.exists?(delete_all_comment.id)).to be false
+
+        # Verify no comments pointing to the post exist in the table (no orphans)
+        expect(Comment.unscoped.where(post_id: post.id).count).to eq(0)
 
         # Nullified child records have their foreign key set to nil
         expect(like.reload.post_id).to be_nil

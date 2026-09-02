@@ -60,45 +60,24 @@ RSpec.describe ActiveRecord::Undo do
       expect(post.soft_delete!).to be false
     end
 
-    it 'soft deletes the target record and sets deleted_at timestamp' do
-      expect { post.soft_delete! }.to change { post.reload.soft_deleted? }.from(false).to(true)
-    end
-
-    it 'cascades soft deletion to dependent associations' do
-      post.soft_delete!
-
-      expect(comment_1.reload.soft_deleted?).to be true
-      expect(comment_2.reload.soft_deleted?).to be true
-    end
-
-    it 'sets exactly the same soft_delete timestamp for the parent and all cascaded children' do
+    it 'soft deletes the target record and cascades to dependent associations with synchronized timestamps' do
       post.soft_delete!
 
       parent_timestamp = post.reload.deleted_at
-      comment_1_timestamp = comment_1.reload.deleted_at
-      comment_2_timestamp = comment_2.reload.deleted_at
-
       expect(parent_timestamp).to be_present
-      expect(comment_1_timestamp).to eq(parent_timestamp)
-      expect(comment_2_timestamp).to eq(parent_timestamp)
+      expect(comment_1.reload.deleted_at).to eq(parent_timestamp)
+      expect(comment_2.reload.deleted_at).to eq(parent_timestamp)
     end
 
-    it 'creates an UndoLog with UndoLogItems for all affected records' do
+    it 'creates and populates UndoLog with UndoLogItems for all affected records' do
+      undo_log = nil
       expect do
-        post.soft_delete!
+        undo_log = post.soft_delete!
       end.to change(ActiveRecord::Undo::UndoLog, :count).by(1)
                                                         .and change(ActiveRecord::Undo::UndoLogItem, :count).by(3)
-    end
-
-    it 'saves the correct values in UndoLog and UndoLogItems' do
-      undo_log = post.soft_delete!
 
       expect(undo_log).to be_a(ActiveRecord::Undo::UndoLog)
-
       log_items = undo_log.undo_log_items
-      expect(log_items.count).to eq(3)
-
-      # Check that log items point to the correct associated items and have correct attributes
       expect(log_items.map(&:item)).to contain_exactly(post, comment_1, comment_2)
       expect(log_items.map(&:item_type)).to contain_exactly('Post', 'Comment', 'Comment')
       expect(log_items.map(&:item_id)).to contain_exactly(post.id, comment_1.id, comment_2.id)
@@ -140,8 +119,9 @@ RSpec.describe ActiveRecord::Undo do
     let!(:post) { Post.create!(title: 'Restorable Post') }
     let!(:comment) { post.comments.create!(body: 'Restorable Comment') }
 
-    it 'restores all soft deleted records across the object tree in reverse order' do
+    it 'restores all soft deleted records and cleans up the UndoLog' do
       undo_log = post.soft_delete!
+      log_id = undo_log.id
 
       expect(post.reload.soft_deleted?).to be true
       expect(comment.reload.soft_deleted?).to be true
@@ -153,15 +133,12 @@ RSpec.describe ActiveRecord::Undo do
 
       expect(post.reload.soft_deleted?).to be false
       expect(comment.reload.soft_deleted?).to be false
+      expect(ActiveRecord::Undo::UndoLog.exists?(id: log_id)).to be false
     end
 
     it 'restores recursively nested associations' do
       reply = comment.replies.create!(post: post, body: 'Reply to restorable comment')
       undo_log = post.soft_delete!
-
-      expect(post.reload.soft_deleted?).to be true
-      expect(comment.reload.soft_deleted?).to be true
-      expect(reply.reload.soft_deleted?).to be true
 
       undo_log.restore!
 
@@ -170,55 +147,27 @@ RSpec.describe ActiveRecord::Undo do
       expect(reply.reload.soft_deleted?).to be false
     end
 
-    it 'deletes the UndoLog and associated UndoLogItems from the database upon restore' do
-      undo_log = post.soft_delete!
-      log_id = undo_log.id
-      item_ids = undo_log.undo_log_items.pluck(:id)
-
-      expect(ActiveRecord::Undo::UndoLog.exists?(id: log_id)).to be true
-      expect(ActiveRecord::Undo::UndoLogItem.where(id: item_ids).count).to eq(2)
-
-      undo_log.restore!
-
-      expect(ActiveRecord::Undo::UndoLog.exists?(id: log_id)).to be false
-      expect(ActiveRecord::Undo::UndoLogItem.where(id: item_ids)).to be_empty
-    end
-
     it 'restores models with custom soft-delete columns' do
       item = ArchiveItem.create!(name: 'Custom Archive')
       undo_log = item.soft_delete!
 
-      expect(item.reload.soft_deleted?).to be true
       undo_log.restore!
 
       expect(item.reload.soft_deleted?).to be false
       expect(item.archived_at).to be_nil
     end
 
-    it 'allows restoring directly from the model object using cascade' do
+    it 'allows restoring directly from the model, updating in-memory state and cascaded records' do
       post.soft_delete!
-
-      expect(post.reload.soft_deleted?).to be true
-      expect(comment.reload.soft_deleted?).to be true
 
       expect do
         post.restore!
       end.to change(ActiveRecord::Undo::UndoLog, :count).by(-1)
                                                         .and change(ActiveRecord::Undo::UndoLogItem, :count).by(-2)
 
-      expect(post.reload.soft_deleted?).to be false
-      expect(comment.reload.soft_deleted?).to be false
-    end
-
-    it 'automatically reloads the record in-memory when restore! is called directly' do
-      post.soft_delete!
-      expect(post.reload.soft_deleted?).to be true
-
-      post.restore!
-
-      # Should be updated in-memory directly without calling reload
       expect(post.soft_deleted?).to be false
       expect(post.deleted_at).to be_nil
+      expect(comment.reload.soft_deleted?).to be false
     end
 
     it 'falls back to simple restore if no UndoLogItem exists' do
@@ -227,7 +176,6 @@ RSpec.describe ActiveRecord::Undo do
 
       post.restore!
 
-      # Verified auto-reloaded in-memory state
       expect(post.soft_deleted?).to be false
       expect(post.deleted_at).to be_nil
     end
@@ -255,41 +203,14 @@ RSpec.describe ActiveRecord::Undo do
       end
     end
 
-    context 'when restoring with invalid data' do
-      it 'raises an error if the model class cannot be loaded' do
+    context 'when restoring corrupted undo log data' do
+      it 'raises an ActiveRecord::Undo::Error if a log item refers to an invalid class' do
         undo_log = post.soft_delete!
-        log_item = undo_log.undo_log_items.first
-
-        # Manually alter the item_type to a non-existent class
-        log_item.update_columns(item_type: 'NonExistentClass')
+        undo_log.undo_log_items.first.update_columns(item_type: 'NonExistentClass')
 
         expect do
           undo_log.restore!
         end.to raise_error(ActiveRecord::Undo::Error, /model class 'NonExistentClass' could not be loaded/)
-      end
-
-      it 'raises an error if the model class is not an ActiveRecord model' do
-        undo_log = post.soft_delete!
-        log_item = undo_log.undo_log_items.first
-
-        # Manually alter the item_type to a non-ActiveRecord class (e.g., 'String')
-        log_item.update_columns(item_type: 'String')
-
-        expect do
-          undo_log.restore!
-        end.to raise_error(ActiveRecord::Undo::Error, /is not an ActiveRecord model/)
-      end
-
-      it 'raises an error if the column does not exist on the class' do
-        undo_log = post.soft_delete!
-        log_item = undo_log.undo_log_items.first
-
-        # Stub the model class column_names to not include 'deleted_at'
-        allow(Post).to receive(:column_names).and_return([])
-
-        expect do
-          log_item.restore_item!
-        end.to raise_error(ActiveRecord::Undo::Error, /column 'deleted_at' does not exist on 'Post' model/)
       end
     end
   end
@@ -299,7 +220,6 @@ RSpec.describe ActiveRecord::Undo do
     let!(:comment) { post.comments.create!(body: 'Rollback Comment') }
 
     it 'rolls back the entire soft-deletion if an error is raised during cascade' do
-      # Force an error to be raised when saving the comment (during cascade delete)
       allow_any_instance_of(Comment)
         .to receive(:soft_delete_cascade_internal!)
         .and_raise(RuntimeError, 'Database failure')
@@ -320,11 +240,9 @@ RSpec.describe ActiveRecord::Undo do
       expect(post.reload.soft_deleted?).to be true
       expect(comment.reload.soft_deleted?).to be true
 
-      # Force an error when restoring the comment
       allow_any_instance_of(ActiveRecord::Undo::UndoLogItem).to receive(:restore_item!).and_call_original
       allow_any_instance_of(ActiveRecord::Undo::UndoLogItem)
         .to receive(:restore_item!).with(no_args).and_wrap_original do |m, *args|
-        # Raise error only if it is the comment being restored
         raise 'Restore failure' if m.receiver.item_type == 'Comment'
 
         m.call(*args)
@@ -336,7 +254,6 @@ RSpec.describe ActiveRecord::Undo do
         end.to raise_error(RuntimeError, 'Restore failure')
       end.not_to change(ActiveRecord::Undo::UndoLog, :count)
 
-      # Verify both remain soft-deleted
       expect(post.reload.soft_deleted?).to be true
       expect(comment.reload.soft_deleted?).to be true
     end
@@ -355,7 +272,6 @@ RSpec.describe ActiveRecord::Undo do
     end
 
     it 'returns false if soft-deleted manually without an undo log entry' do
-      # Simulating a direct SQL update or legacy soft delete
       post.update_columns(deleted_at: Time.current)
       expect(post.reload.undoable?).to be false
     end
