@@ -338,13 +338,30 @@ post.soft_delete!(whodunnit: current_user, tenant: current_account)
 post.restore!(whodunnit: current_user)
 ```
 
-### 4. Tenant Matching Security
+### 4. Tenant Matching Security & Context Enforcement
+
+#### Tenant Matching Security
 
 When restoring a log that belongs to a tenant, the gem verifies that the initiating context's tenant matches the log's tenant. If there is a mismatch (or if no tenant is set in the context), the gem raises an `ActiveRecord::Undo::SecurityError`:
 
 ```ruby
 ActiveRecord::Undo.current_tenant = wrong_account
-post.restore! # => raises ActiveRecord::Undo::SecurityError
+post.restore! # => raises ActiveRecord::Undo::SecurityError: Tenant mismatch
+```
+
+#### Configured Context Enforcement
+
+When `current_user_method` or `current_tenant_method` is configured via `ActiveRecord::Undo.configure`, operations enforce that the evaluated context is not `nil`:
+
+- Calling `soft_delete!` or `restore!` when a configured method evaluates to `nil` immediately raises an `ActiveRecord::Undo::SecurityError`.
+- If both user and tenant methods are configured, both must return valid non-nil objects for operations to proceed.
+- If neither method is configured, operations proceed normally without requiring user or tenant context.
+
+```ruby
+# If current_user_method is configured (e.g. -> { Current.user }),
+# but the request is unauthenticated (evaluates to nil):
+post.soft_delete! # => raises ActiveRecord::Undo::SecurityError: Configured current_user_method returned nil.
+post.restore!     # => raises ActiveRecord::Undo::SecurityError: Configured current_user_method returned nil.
 ```
 
 ### 5. Query Scopes & Purging
@@ -384,6 +401,8 @@ To ensure database integrity and provide clear debugging context, the gem raises
 - **Missing Model Class (`ActiveRecord::Undo::Error`):** If a model class has been renamed or deleted, preventing the polymorphic log items from finding the target class during restore.
 - **Missing Column on Target Class (`ActiveRecord::Undo::Error`):** If a model class exists but no longer has the target soft-delete column during restore.
 - **Cross-Tenant Restoration Attempt (`ActiveRecord::Undo::SecurityError`):** If attempting to restore a record whose `UndoLog` belongs to a tenant different from the current context tenant.
+- **Missing Tenant Context on Restoration (`ActiveRecord::Undo::SecurityError`):** If attempting to restore a tenant-scoped record when no tenant is set in the context.
+- **Configured Context Evaluated to Nil (`ActiveRecord::Undo::SecurityError`):** If `current_user_method` or `current_tenant_method` is configured but returns `nil` during `soft_delete!` or `restore!`.
 
 ---
 
