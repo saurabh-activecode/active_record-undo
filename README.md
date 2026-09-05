@@ -30,9 +30,8 @@ Unlike traditional soft-deletion gems that merely flip a timestamp on a single r
     - [Available Endpoints](#available-endpoints)
     - [View Helpers (`undo_button_to` \& `undo_link_to`)](#view-helpers-undo_button_to--undo_link_to)
     - [Cryptographic Signed Restore Tokens](#cryptographic-signed-restore-tokens)
-      - [How Signed Tokens Work](#how-signed-tokens-work)
-      - [Key Security Properties](#key-security-properties)
       - [Generating \& Using Signed Tokens](#generating--using-signed-tokens)
+      - [Key Security Properties](#key-security-properties)
     - [Multi-Format Responses](#multi-format-responses)
     - [Security \& Open-Redirect Protection](#security--open-redirect-protection)
   - [Multi-Tenant Isolation \& User Attribution](#multi-tenant-isolation--user-attribution)
@@ -308,43 +307,7 @@ Clean view helpers are automatically available in all Rails views and forms:
 
 When exposing restore actions in flash notifications, transactional emails, webhook alerts, or public interfaces, relying on sequential database IDs (e.g., `POST /undo/logs/42/restore`) can expose your application to ID enumeration attacks.
 
-`active_record-undo` provides a built-in cryptographic token system allowing restoration via tamper-proof, opaque URLs: `POST /undo/restore/:token`.
-
-#### How Signed Tokens Work
-
-```mermaid
-sequenceDiagram
-    autonumber
-    actor User as User / Browser
-    participant App as Rails Host App
-    participant Engine as Undo Engine
-    participant Log as UndoLog (DB)
-
-    Note over App: 1. Token Generation
-    App->>App: post.signed_token
-    Note right of App: Encodes log ID, purpose: :restore,<br/>and expiration timestamp signed via HMAC-SHA256
-
-    Note over User, Engine: 2. Token Restoration Request
-    User->>Engine: POST /undo/restore/:token
-    Engine->>Engine: UndoLog.find_by_signed_token(token)
-    Note right of Engine: Verifies HMAC signature, checks purpose == :restore,<br/>and confirms token has not expired
-
-    alt Valid & Active Token
-        Engine->>Log: undo_log.restore!
-        Note right of Log: Restores record tree & destroys UndoLog record (Single-Use Replay Protection)
-        Engine-->>User: 200 OK / Redirect with Notice
-    else Tampered, Expired, or Already Restored
-        Engine-->>User: 404 Not Found (or 422 Unprocessable Content)
-    end
-```
-
-#### Key Security Properties
-
-1. **HMAC-SHA256 Cryptographic Tamper Resistance:** Tokens are signed using `Rails.application.message_verifier(:active_record_undo)` derived securely from your application's `secret_key_base`. Any payload alteration invalidates the cryptographic signature.
-2. **Purpose Isolation (`purpose: :restore`):** Tokens are strictly scoped to restoration. Tokens generated for other purposes (or by other verifiers) are rejected.
-3. **Time-Limited Lifespan:** Tokens include an embedded expiration timestamp (configurable via `config.token_expires_in`, defaults to `24.hours`). Expired tokens are rejected automatically.
-4. **Single-Use Replay Protection:** When `undo_log.restore!` succeeds, it automatically destroys the `UndoLog` and its associated items from the database (`destroy!`). Even if an attacker or user resubmits the signed token before its cryptographic expiration, the database lookup fails and returns `nil`, rendering a `404 Not Found`.
-5. **Multi-Tenant Authorization:** Cryptographic validity only proves the token was authentic. During execution, `undo_log.restore!` still enforces multi-tenant boundary matching against `ActiveRecord::Undo.current_tenant`. An authenticated user from Tenant B cannot use a token from Tenant A to restore data.
+`active_record-undo` provides signed tokens for restoration via tamper-proof, opaque URLs: `POST /undo/restore/:token`.
 
 #### Generating & Using Signed Tokens
 
@@ -380,6 +343,14 @@ restore_url = active_record_undo.signed_restore_url(token: token)
 # Manually verify and retrieve the associated UndoLog
 undo_log = ActiveRecord::Undo::UndoLog.find_by_signed_token(params[:token])
 ```
+
+#### Key Security Properties
+
+1. **HMAC-SHA256 Cryptographic Tamper Resistance:** Tokens are signed using `Rails.application.message_verifier(:active_record_undo)` derived securely from your application's `secret_key_base`. Any payload alteration invalidates the cryptographic signature.
+2. **Purpose Isolation (`purpose: :restore`):** Tokens are strictly scoped to restoration. Tokens generated for other purposes (or by other verifiers) are rejected.
+3. **Time-Limited Lifespan:** Tokens include an embedded expiration timestamp (configurable via `config.token_expires_in`, defaults to `24.hours`). Expired tokens are rejected automatically.
+4. **Single-Use Replay Protection:** When `undo_log.restore!` succeeds, it automatically destroys the `UndoLog` and its associated items from the database (`destroy!`). Even if an attacker or user resubmits the signed token before its cryptographic expiration, the database lookup fails and returns `nil`, rendering a `404 Not Found`.
+5. **Multi-Tenant Authorization:** Cryptographic validity only proves the token was authentic. During execution, `undo_log.restore!` still enforces multi-tenant boundary matching against `ActiveRecord::Undo.current_tenant`. An authenticated user from Tenant B cannot use a token from Tenant A to restore data.
 
 ### Multi-Format Responses
 
