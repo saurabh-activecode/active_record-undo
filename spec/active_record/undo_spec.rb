@@ -179,6 +179,40 @@ RSpec.describe ActiveRecord::Undo do
       expect(post.soft_deleted?).to be false
       expect(post.deleted_at).to be_nil
     end
+
+    it 'handles repeated soft-delete and restore cycles cleanly' do
+      expect(post.undoable?).to be false
+      first_log = post.soft_delete!
+      expect(post.undoable?).to be true
+      expect(post.undo_log).to eq(first_log)
+
+      post.restore!
+      expect(post.soft_deleted?).to be false
+      expect(post.undoable?).to be false
+      expect(post.undo_log).to be_nil
+      expect(ActiveRecord::Undo::UndoLog.exists?(first_log.id)).to be false
+
+      second_log = post.soft_delete!
+      expect(post.soft_deleted?).to be true
+      expect(post.undoable?).to be true
+      expect(post.undo_log).to eq(second_log)
+      expect(second_log.id).not_to eq(first_log.id)
+
+      post.restore!
+      expect(post.soft_deleted?).to be false
+      expect(post.undoable?).to be false
+      expect(post.undo_log).to be_nil
+      expect(ActiveRecord::Undo::UndoLog.count).to eq(0)
+    end
+
+    it 'restores successfully even if an associated child record was hard-deleted from database' do
+      post.soft_delete!
+      comment.delete
+
+      expect { post.restore! }.not_to raise_error
+      expect(post.soft_deleted?).to be false
+      expect(post.deleted_at).to be_nil
+    end
   end
 
   describe 'error handling' do

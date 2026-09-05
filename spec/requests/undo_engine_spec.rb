@@ -96,6 +96,72 @@ RSpec.describe 'ActiveRecord::Undo::Engine Requests', type: :request do
 
       expect(response).to redirect_to('http://www.example.com/dashboard')
     end
+
+    it 'blocks javascript scheme URLs even if host matches' do
+      post = Post.create!(title: 'XSS Scheme Attack')
+      undo_log = post.soft_delete!
+
+      post "/undo/logs/#{undo_log.id}/restore", params: { redirect_to: 'javascript://www.example.com/%0Aalert(1)' }
+
+      expect(response).to redirect_to('/')
+      expect(response).not_to redirect_to('javascript://www.example.com/%0Aalert(1)')
+    end
+
+    it 'blocks CRLF characters in redirect_to' do
+      post = Post.create!(title: 'CRLF Attack')
+      undo_log = post.soft_delete!
+
+      post "/undo/logs/#{undo_log.id}/restore", params: { redirect_to: "/posts\r\nSet-Cookie: evil=1" }
+
+      expect(response).to redirect_to('/')
+    end
+
+    it 'blocks port mismatch on same-host URLs' do
+      post = Post.create!(title: 'Port Mismatch Attack')
+      undo_log = post.soft_delete!
+
+      post "/undo/logs/#{undo_log.id}/restore", params: { redirect_to: 'http://www.example.com:9999/dashboard' }
+
+      expect(response).to redirect_to('/')
+    end
+
+    it 'blocks data and vbscript schemes' do
+      post_1 = Post.create!(title: 'Scheme Attack 1')
+      log_1 = post_1.soft_delete!
+      data_uri = 'data:text/html;base64,PHNjcmlwdD5hbGVydCgxKTwvc2NyaXB0Pg=='
+
+      post "/undo/logs/#{log_1.id}/restore", params: { redirect_to: data_uri }
+      expect(response).to redirect_to('/')
+
+      post_2 = Post.create!(title: 'Scheme Attack 2')
+      log_2 = post_2.soft_delete!
+
+      post "/undo/logs/#{log_2.id}/restore", params: { redirect_to: 'vbscript:msgbox(1)' }
+      expect(response).to redirect_to('/')
+    end
+
+    it 'safely falls back when redirect_to receives unexpected types (hash or array)' do
+      post_1 = Post.create!(title: 'Parameter Tampering 1')
+      log_1 = post_1.soft_delete!
+
+      post "/undo/logs/#{log_1.id}/restore", params: { redirect_to: ['/dashboard'] }
+      expect(response).to redirect_to('/')
+
+      post_2 = Post.create!(title: 'Parameter Tampering 2')
+      log_2 = post_2.soft_delete!
+
+      post "/undo/logs/#{log_2.id}/restore", params: { redirect_to: { evil: 'true' } }
+      expect(response).to redirect_to('/')
+    end
+
+    it 'responds with HTTP 303 See Other on HTML redirects' do
+      post = Post.create!(title: 'Turbo 303 Redirect')
+      undo_log = post.soft_delete!
+
+      post "/undo/logs/#{undo_log.id}/restore", headers: { 'HTTP_REFERER' => '/posts' }
+
+      expect(response).to have_http_status(:see_other)
+    end
   end
 
   describe 'POST /undo/logs/:id/restore (JSON)' do
@@ -154,6 +220,58 @@ RSpec.describe 'ActiveRecord::Undo::Engine Requests', type: :request do
       expect(json['error']).to match(/not found/i)
       expect(post.reload.soft_deleted?).to be true
     end
+
+    it 'rejects signed tokens generated for a different purpose' do
+      post = Post.create!(title: 'Wrong Purpose Post')
+      undo_log = post.soft_delete!
+      wrong_purpose_token = ActiveRecord::Undo::UndoLog.token_verifier.generate(undo_log.id, purpose: :other)
+
+      post "/undo/restore/#{wrong_purpose_token}", as: :json
+
+      expect(response).to have_http_status(:not_found)
+      expect(post.reload.soft_deleted?).to be true
+    end
+
+    it 'rejects expired signed tokens' do
+      post = Post.create!(title: 'Expired Signed Token Post')
+      undo_log = post.soft_delete!
+      expired_token = undo_log.signed_token(expires_in: 0.1.seconds)
+      sleep 0.2
+
+      post "/undo/restore/#{expired_token}", as: :json
+
+      expect(response).to have_http_status(:not_found)
+      expect(post.reload.soft_deleted?).to be true
+    end
+
+    it 'enforces tenant boundary security on signed token restoration' do
+      tenant_post = Post.create!(title: 'Tenant Signed Post', tenant: account_1)
+      undo_log = tenant_post.soft_delete!(tenant: account_1)
+      valid_token = undo_log.signed_token
+
+      ActiveRecord::Undo.current_tenant = account_2
+
+      post "/undo/restore/#{valid_token}", as: :json
+
+      expect(response).to have_http_status(:forbidden)
+      json = JSON.parse(response.body)
+      expect(json['error']).to match(/Tenant mismatch/i)
+      expect(tenant_post.reload.soft_deleted?).to be true
+    end
+
+    it 'redirects with alert when restoring via signed token with mismatched tenant in HTML' do
+      tenant_post = Post.create!(title: 'Tenant Signed Post HTML', tenant: account_1)
+      undo_log = tenant_post.soft_delete!(tenant: account_1)
+      valid_token = undo_log.signed_token
+
+      ActiveRecord::Undo.current_tenant = account_2
+
+      post "/undo/restore/#{valid_token}", headers: { 'HTTP_REFERER' => '/posts' }
+
+      expect(response).to redirect_to('/posts')
+      expect(flash[:alert]).to match(/Tenant mismatch/i)
+      expect(tenant_post.reload.soft_deleted?).to be true
+    end
   end
 
   describe 'Missing and Already Restored Logs' do
@@ -163,6 +281,20 @@ RSpec.describe 'ActiveRecord::Undo::Engine Requests', type: :request do
       expect(response).to have_http_status(:not_found)
       json = JSON.parse(response.body)
       expect(json['error']).to match(/not found or already restored/i)
+    end
+
+    it 'returns 404 Not Found for non-numeric ID without raising database errors' do
+      post '/undo/logs/non-numeric-identifier/restore', as: :json
+
+      expect(response).to have_http_status(:not_found)
+      json = JSON.parse(response.body)
+      expect(json['error']).to match(/not found or already restored/i)
+    end
+
+    it 'safely returns nil when find_by_signed_token receives non-string input' do
+      expect(ActiveRecord::Undo::UndoLog.find_by_signed_token(12_345)).to be_nil
+      expect(ActiveRecord::Undo::UndoLog.find_by_signed_token(nil)).to be_nil
+      expect(ActiveRecord::Undo::UndoLog.find_by_signed_token(['array'])).to be_nil
     end
 
     it 'returns 404 Not Found for non-existent ID in HTML when no referer is provided' do

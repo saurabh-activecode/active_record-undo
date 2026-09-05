@@ -38,11 +38,18 @@ module ActiveRecord
       end
 
       def find_by_id_or_token(identifier)
-        if identifier.to_s.match?(/\A\d+\z/)
+        str = identifier.to_s
+        return nil if str.blank?
+
+        if str.match?(/\A\d+\z/) || uuid_identifier?(str)
           ActiveRecord::Undo::UndoLog.find_by(id: identifier)
         else
-          ActiveRecord::Undo::UndoLog.find_by_signed_token(identifier)
+          ActiveRecord::Undo::UndoLog.find_by_signed_token(str)
         end
+      end
+
+      def uuid_identifier?(str)
+        str.match?(/\A[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\z/i)
       end
 
       def execute_restore_action
@@ -62,7 +69,9 @@ module ActiveRecord
 
       def respond_with_restored_log(count)
         respond_to do |format|
-          format.html { redirect_to determine_redirect_path, notice: 'Record successfully restored.' }
+          format.html do
+            redirect_to determine_redirect_path, notice: 'Record successfully restored.', status: :see_other
+          end
           format.turbo_stream { render_turbo_stream_success }
           format.json { render json: { success: true, restored_items_count: count }, status: :ok }
         end

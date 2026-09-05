@@ -14,7 +14,7 @@ module ActiveRecord
       end
 
       def safe_redirect_path(path)
-        return nil if path.blank? || !path.is_a?(String)
+        return nil if invalid_path_string?(path)
 
         uri = URI.parse(path)
         return path if valid_relative_path?(path, uri)
@@ -25,12 +25,18 @@ module ActiveRecord
         nil
       end
 
+      def invalid_path_string?(path)
+        path.blank? || !path.is_a?(String) || path.match?(/[\r\n]/)
+      end
+
       def valid_relative_path?(path, uri)
-        uri.relative? && path.start_with?('/') && !path.start_with?('//') && !path.start_with?('/\\')
+        uri.relative? && uri.scheme.nil? && path.start_with?('/') && !path.start_with?('//') && !path.start_with?('/\\')
       end
 
       def valid_same_host_path?(uri)
-        uri.host == request.host && (uri.port.nil? || uri.port == request.port)
+        %w[http https].include?(uri.scheme) &&
+          uri.host == request.host &&
+          (uri.port.nil? || uri.port == request.port)
       end
 
       def resolve_fallback_path

@@ -41,7 +41,7 @@ module ActiveRecord
       }
 
       def self.find_by_signed_token(token, purpose: :restore)
-        return nil if token.blank?
+        return nil unless token.is_a?(String) && token.present?
 
         verified_id = verify_signed_token(token, purpose: purpose)
         return nil unless verified_id
@@ -52,8 +52,10 @@ module ActiveRecord
       end
 
       def self.verify_signed_token(token, purpose: :restore)
+        return nil unless token.is_a?(String) && token.present?
+
         token_verifier.verified(token, purpose: purpose)
-      rescue ActiveSupport::MessageVerifier::InvalidSignature
+      rescue StandardError
         nil
       end
 

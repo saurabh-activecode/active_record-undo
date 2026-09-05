@@ -44,5 +44,21 @@ RSpec.describe ActiveRecord::Undo::UndoLogItem do
         log_item.restore_item!
       end.to raise_error(ActiveRecord::Undo::Error, /column 'deleted_at' does not exist on 'Post' model/)
     end
+
+    it 'raises an ActiveRecord::Undo::Error if the class is a Ruby system class' do
+      log_item = undo_log.undo_log_items.create!(item: post)
+      log_item.update_columns(item_type: 'File')
+
+      expect do
+        log_item.restore_item!
+      end.to raise_error(ActiveRecord::Undo::Error, /'File' is not an ActiveRecord model/)
+    end
+
+    it 'gracefully returns without error if the target database record was hard-deleted' do
+      log_item = undo_log.undo_log_items.create!(item: post)
+      post.delete
+
+      expect { log_item.restore_item! }.not_to raise_error
+    end
   end
 end

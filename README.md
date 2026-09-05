@@ -12,35 +12,45 @@ Unlike traditional soft-deletion gems that merely flip a timestamp on a single r
 ## Table of Contents
 
 - [Features](#features)
-- [Installation & Migrations](#installation--migrations)
-- [Model Setup](#model-setup)
-- [Basic Usage](#basic-usage)
-  - [Cascading Soft Deletes](#cascading-soft-deletes)
-  - [Restoring Records](#restoring-records)
-  - [Status & Eligibility Helpers](#status--eligibility-helpers)
-  - [Query Scopes](#query-scopes)
-  - [Inspecting Deletion Logs](#inspecting-deletion-logs)
-- [Mountable Route & Controller Engine](#mountable-route--controller-engine)
-  - [Mounting the Engine](#mounting-the-engine)
-  - [Available Endpoints](#available-endpoints)
-  - [View Helpers (undo_button_to & undo_link_to)](#view-helpers-undo_button_to--undo_link_to)
-  - [Multi-Format Responses](#multi-format-responses)
-  - [Security & Open-Redirect Protection](#security--open-redirect-protection)
-- [Multi-Tenant Isolation & User Attribution](#multi-tenant-isolation--user-attribution)
-  - [User Attribution (whodunnit)](#user-attribution-whodunnit)
-  - [Multi-Tenant Scoping](#multi-tenant-scoping)
-  - [Tenant Matching Security](#tenant-matching-security)
-  - [Configured Context Enforcement](#configured-context-enforcement)
-- [Retention, Expiration & Purging](#retention-expiration--purging)
-  - [Expiration Checks](#expiration-checks)
-  - [Purger Service](#purger-service)
-  - [ActiveJob Background Worker](#activejob-background-worker)
-  - [Rake Task](#rake-task)
-- [Configuration Reference](#configuration-reference)
-- [How It Works](#how-it-works)
-- [Error Reference](#error-reference)
-- [Development & Contributing](#development--contributing)
-- [License](#license)
+- [Installation \& Migrations](#installation--migrations)
+    - [Database Migrations](#database-migrations)
+  - [Model Setup](#model-setup)
+    - [1. Add Timestamp Column to Tables](#1-add-timestamp-column-to-tables)
+    - [2. Declare `acts_as_undoable`](#2-declare-acts_as_undoable)
+  - [Basic Usage](#basic-usage)
+    - [Cascading Soft Deletes](#cascading-soft-deletes)
+    - [Restoring Records](#restoring-records)
+      - [Option A: Restore from the model (Recommended)](#option-a-restore-from-the-model-recommended)
+      - [Option B: Restore from the `UndoLog`](#option-b-restore-from-the-undolog)
+    - [Status \& Eligibility Helpers](#status--eligibility-helpers)
+    - [Query Scopes](#query-scopes)
+    - [Inspecting Deletion Logs](#inspecting-deletion-logs)
+  - [Mountable Route \& Controller Engine](#mountable-route--controller-engine)
+    - [Mounting the Engine](#mounting-the-engine)
+    - [Available Endpoints](#available-endpoints)
+    - [View Helpers (`undo_button_to` \& `undo_link_to`)](#view-helpers-undo_button_to--undo_link_to)
+    - [Cryptographic Signed Restore Tokens](#cryptographic-signed-restore-tokens)
+      - [How Signed Tokens Work](#how-signed-tokens-work)
+      - [Key Security Properties](#key-security-properties)
+      - [Generating \& Using Signed Tokens](#generating--using-signed-tokens)
+    - [Multi-Format Responses](#multi-format-responses)
+    - [Security \& Open-Redirect Protection](#security--open-redirect-protection)
+  - [Multi-Tenant Isolation \& User Attribution](#multi-tenant-isolation--user-attribution)
+    - [User Attribution (`whodunnit`)](#user-attribution-whodunnit)
+    - [Multi-Tenant Scoping](#multi-tenant-scoping)
+    - [Tenant Matching Security](#tenant-matching-security)
+    - [Configured Context Enforcement](#configured-context-enforcement)
+  - [Retention, Expiration \& Purging](#retention-expiration--purging)
+    - [Expiration Checks](#expiration-checks)
+    - [Purger Service](#purger-service)
+    - [ActiveJob Background Worker](#activejob-background-worker)
+    - [Rake Task](#rake-task)
+  - [Configuration Reference](#configuration-reference)
+  - [How It Works](#how-it-works)
+  - [Error Reference](#error-reference)
+  - [Development](#development)
+  - [Contributing](#contributing)
+  - [License](#license)
 
 ---
 
@@ -195,7 +205,7 @@ post.reload.soft_deleted? # => false
 
 ### Status & Eligibility Helpers
 
-`ActiveRecord::Undo` provides fast predicate methods on models:
+`ActiveRecord::Undo` provides fast predicate methods and audit helpers on models:
 
 ```ruby
 # Checks if the soft-delete column is set
@@ -206,13 +216,21 @@ post.undoable?     # => true / false
 
 # Checks if the soft-deleted record has exceeded the configured retention period
 post.expired?      # => true / false
+
+# Retrieves the latest UndoLog audit record associated with this model
+post.undo_log      # => #<ActiveRecord::Undo::UndoLog id: 14, ...>
+post.latest_undo_log # alias
+
+# Generates a cryptographic signed restoration token directly from the model
+post.signed_token  # => "eyJfcmFpbHMiOnsiZGF0YSI6..."
 ```
 
 > [!TIP]
-> Use `#undoable?` to conditionally display restore buttons in your user interface:
+> Use `#undoable?` to conditionally display restore buttons in your user interface, passing the model instance directly:
+>
 > ```erb
 > <% if post.undoable? %>
->   <%= undo_button_to(post, "Undo Delete") %>
+>   <%= undo_button_to(post, text: "Restore") %>
 > <% end %>
 > ```
 
@@ -262,10 +280,10 @@ end
 
 ### Available Endpoints
 
-| Method | Route | Controller#Action | Description |
-| :--- | :--- | :--- | :--- |
-| `POST` | `/undo/logs/:id/restore` | `active_record/undo/logs#restore` | Restores an `UndoLog` by ID |
-| `POST` | `/undo/restore/:token` | `active_record/undo/restores#create` | Restores an `UndoLog` using a signed token |
+| Method | Route                    | Controller#Action                    | Description                                |
+| :----- | :----------------------- | :----------------------------------- | :----------------------------------------- |
+| `POST` | `/undo/logs/:id/restore` | `active_record/undo/logs#restore`    | Restores an `UndoLog` by ID                |
+| `POST` | `/undo/restore/:token`   | `active_record/undo/restores#create` | Restores an `UndoLog` using a signed token |
 
 ### View Helpers (`undo_button_to` & `undo_link_to`)
 
@@ -286,24 +304,102 @@ Clean view helpers are automatically available in all Rails views and forms:
 <%= undo_link_to(@undo_log, signed: true) %>
 ```
 
+### Cryptographic Signed Restore Tokens
+
+When exposing restore actions in flash notifications, transactional emails, webhook alerts, or public interfaces, relying on sequential database IDs (e.g., `POST /undo/logs/42/restore`) can expose your application to ID enumeration attacks.
+
+`active_record-undo` provides a built-in cryptographic token system allowing restoration via tamper-proof, opaque URLs: `POST /undo/restore/:token`.
+
+#### How Signed Tokens Work
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor User as User / Browser
+    participant App as Rails Host App
+    participant Engine as Undo Engine
+    participant Log as UndoLog (DB)
+
+    Note over App: 1. Token Generation
+    App->>App: post.signed_token
+    Note right of App: Encodes log ID, purpose: :restore,<br/>and expiration timestamp signed via HMAC-SHA256
+
+    Note over User, Engine: 2. Token Restoration Request
+    User->>Engine: POST /undo/restore/:token
+    Engine->>Engine: UndoLog.find_by_signed_token(token)
+    Note right of Engine: Verifies HMAC signature, checks purpose == :restore,<br/>and confirms token has not expired
+
+    alt Valid & Active Token
+        Engine->>Log: undo_log.restore!
+        Note right of Log: Restores record tree & destroys UndoLog record (Single-Use Replay Protection)
+        Engine-->>User: 200 OK / Redirect with Notice
+    else Tampered, Expired, or Already Restored
+        Engine-->>User: 404 Not Found (or 422 Unprocessable Content)
+    end
+```
+
+#### Key Security Properties
+
+1. **HMAC-SHA256 Cryptographic Tamper Resistance:** Tokens are signed using `Rails.application.message_verifier(:active_record_undo)` derived securely from your application's `secret_key_base`. Any payload alteration invalidates the cryptographic signature.
+2. **Purpose Isolation (`purpose: :restore`):** Tokens are strictly scoped to restoration. Tokens generated for other purposes (or by other verifiers) are rejected.
+3. **Time-Limited Lifespan:** Tokens include an embedded expiration timestamp (configurable via `config.token_expires_in`, defaults to `24.hours`). Expired tokens are rejected automatically.
+4. **Single-Use Replay Protection:** When `undo_log.restore!` succeeds, it automatically destroys the `UndoLog` and its associated items from the database (`destroy!`). Even if an attacker or user resubmits the signed token before its cryptographic expiration, the database lookup fails and returns `nil`, rendering a `404 Not Found`.
+5. **Multi-Tenant Authorization:** Cryptographic validity only proves the token was authentic. During execution, `undo_log.restore!` still enforces multi-tenant boundary matching against `ActiveRecord::Undo.current_tenant`. An authenticated user from Tenant B cannot use a token from Tenant A to restore data.
+
+#### Generating & Using Signed Tokens
+
+**In Views (using helpers):**
+
+```erb
+<%# Renders a form POST to /undo/restore/:token %>
+<%= undo_button_to(post, signed: true, text: "Undo Delete", class: "btn btn-outline-primary") %>
+
+<%# Renders an anchor tag for Turbo / Hotwire %>
+<%= undo_link_to(post, signed: true, text: "Undo") %>
+```
+
+**In Controllers, Background Jobs & Mailers:**
+
+```ruby
+# Generate token directly from the model instance
+token = post.signed_token
+
+# Or with a custom expiration window
+token = post.signed_token(expires_in: 2.hours)
+
+# Or directly from an UndoLog instance
+token = undo_log.signed_token
+
+# Construct full URL for transactional emails or Slack webhooks
+restore_url = active_record_undo.signed_restore_url(token: token)
+```
+
+**Manual Verification & Retrieval:**
+
+```ruby
+# Manually verify and retrieve the associated UndoLog
+undo_log = ActiveRecord::Undo::UndoLog.find_by_signed_token(params[:token])
+```
+
 ### Multi-Format Responses
 
 The engine controller seamlessly handles multiple response formats:
 
-* **HTML:** Redirects to `params[:redirect_to]` (if a validated safe URL), `request.referer`, or `config.default_redirect_path` with a flash notice (`flash[:notice] = "Record successfully restored."`).
-* **Turbo Stream (`text/vnd.turbo-stream.html`):** Renders inline `<turbo-stream>` notification elements with HTTP status `200 OK`.
-* **JSON:** Returns `{ "success": true, "restored_items_count": count }` with HTTP status `200 OK`.
+- **HTML:** Redirects to `params[:redirect_to]` (if a validated safe URL), `request.referer`, or `config.default_redirect_path` with a flash notice (`flash[:notice] = "Record successfully restored."`).
+- **Turbo Stream (`text/vnd.turbo-stream.html`):** Renders inline `<turbo-stream>` notification elements with HTTP status `200 OK`.
+- **JSON:** Returns `{ "success": true, "restored_items_count": count }` with HTTP status `200 OK`.
 
 In error scenarios (missing record, expired action, or security mismatch):
-* **`403 Forbidden`:** Rendered on `ActiveRecord::Undo::SecurityError` (or HTML redirected with `flash[:alert]`).
-* **`404 Not Found`:** Rendered when the undo log does not exist or has already been restored.
-* **`422 Unprocessable Content`:** Rendered when the undo action has expired beyond the retention period.
+
+- **`403 Forbidden`:** Rendered on `ActiveRecord::Undo::SecurityError` (or HTML redirected with `flash[:alert]`).
+- **`404 Not Found`:** Rendered when the undo log does not exist or has already been restored.
+- **`422 Unprocessable Content`:** Rendered when the undo action has expired beyond the retention period.
 
 ### Security & Open-Redirect Protection
 
 - **CSRF Protection:** Inherits from `ActionController::Base` (or your configured `base_controller`) with CSRF verification enabled.
 - **Open-Redirect Mitigation:** `params[:redirect_to]` and `request.referer` undergo strict URL validation. Only relative paths or URLs matching the request's exact host and port are accepted; foreign or protocol-relative URLs (e.g., `//evil.com`) are rejected in favor of the safe fallback.
-- **Signed Tokens:** `undo_log.signed_token` uses Rails' `message_verifier(:active_record_undo)` to sign tokens cryptographically, preventing tampering and ID enumeration.
+- **Signed Tokens:** `undo_log.signed_token` uses Rails' `message_verifier(:active_record_undo)` to sign tokens cryptographically, preventing tampering, replay, and ID enumeration.
 
 ---
 
@@ -451,6 +547,9 @@ ActiveRecord::Undo.configure do |config|
   # Expiration duration for signed restore tokens (defaults to 24.hours)
   config.token_expires_in = 24.hours
 
+  # Custom secret key for signed tokens (defaults to nil, utilizing Rails application verifier)
+  config.token_secret_key = nil
+
   # Error handling strategy for HTML requests (:auto, :redirect, or :render)
   # Defaults to :auto (redirects with flash alert if referer/redirect_to present, else renders status)
   config.error_handling = :auto
@@ -471,13 +570,13 @@ end
 
 ## Error Reference
 
-| Error Class | Trigger Scenario |
-| :--- | :--- |
-| `ActiveRecord::Undo::Error` | The configured soft-delete column does not exist on the table. |
-| `ActiveRecord::Undo::Error` | A model class referenced by an `UndoLogItem` was renamed or deleted. |
+| Error Class                         | Trigger Scenario                                                              |
+| :---------------------------------- | :---------------------------------------------------------------------------- |
+| `ActiveRecord::Undo::Error`         | The configured soft-delete column does not exist on the table.                |
+| `ActiveRecord::Undo::Error`         | A model class referenced by an `UndoLogItem` was renamed or deleted.          |
 | `ActiveRecord::Undo::SecurityError` | Attempted restore where the context's tenant does not match the log's tenant. |
-| `ActiveRecord::Undo::SecurityError` | Attempted restore of a tenant-scoped log when no tenant is set in context. |
-| `ActiveRecord::Undo::SecurityError` | Configured `current_user_method` or `current_tenant_method` returned `nil`. |
+| `ActiveRecord::Undo::SecurityError` | Attempted restore of a tenant-scoped log when no tenant is set in context.    |
+| `ActiveRecord::Undo::SecurityError` | Configured `current_user_method` or `current_tenant_method` returned `nil`.   |
 
 ---
 
