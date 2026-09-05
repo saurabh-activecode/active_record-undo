@@ -12,7 +12,9 @@ end
 require 'set'
 require_relative 'undo/version'
 require_relative 'undo/engine' if defined?(Rails::Engine)
+require_relative 'undo/view_helpers' if defined?(ActionView)
 require_relative 'undo/configuration'
+require_relative 'undo/safe_redirect'
 require_relative 'undo/model_extension'
 require_relative 'undo/undo_log'
 require_relative 'undo/undo_log_item'
@@ -83,6 +85,17 @@ module ActiveRecord
                 'Configured current_tenant_method returned nil.'
               end
         raise ActiveRecord::Undo::SecurityError, msg
+      end
+
+      def base_controller_class
+        configured = config.base_controller
+        return configured if configured.is_a?(Class)
+
+        (configured.presence && configured.to_s.safe_constantize) || default_base_controller
+      end
+
+      def default_base_controller
+        defined?(ActionController::Base) ? ActionController::Base : Object
       end
 
       private

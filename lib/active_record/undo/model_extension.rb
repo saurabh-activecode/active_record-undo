@@ -69,13 +69,25 @@ module ActiveRecord
         end
 
         def undoable?
-          return false unless soft_deleted?
+          return false unless persisted? && soft_deleted?
 
           ActiveRecord::Undo::UndoLogItem.joins(:undo_log).exists?(
             item_type: self.class.name,
             item_id: id
           )
         end
+
+        def undo_log
+          return nil unless persisted? && soft_deleted?
+
+          find_latest_undo_log_item&.undo_log
+        end
+        alias latest_undo_log undo_log
+
+        def signed_token(expires_in: ActiveRecord::Undo.config.token_expires_in, purpose: :restore)
+          undo_log&.signed_token(expires_in: expires_in, purpose: purpose)
+        end
+        alias to_signed_token signed_token
 
         def soft_delete!(whodunnit: nil, tenant: nil)
           ensure_undoable_column_exists!
@@ -113,8 +125,9 @@ module ActiveRecord
 
         def find_latest_undo_log_item
           ActiveRecord::Undo::UndoLogItem
+            .joins(:undo_log)
             .where(item: self)
-            .order(created_at: :desc)
+            .order(created_at: :desc, id: :desc)
             .first
         end
 

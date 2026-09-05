@@ -39,23 +39,29 @@ graph TD
 
 ### Component Summary
 
-| Component                      | File Path                                                      | Class / Module       | Core Responsibility                                                                                                                    |
-| :----------------------------- | :------------------------------------------------------------- | :------------------- | :------------------------------------------------------------------------------------------------------------------------------------- |
-| **Main Hook & Context**        | `lib/active_record/undo.rb`                                    | `ActiveRecord::Undo` | Hooks into `ActiveSupport.on_load(:active_record)`, manages ambient thread context (`whodunnit`, `current_tenant`), and defines errors |
-| **Model Extension**            | `lib/active_record/undo/model_extension.rb`                    | `ModelExtension`     | Injects DSL (`acts_as_undoable`), scopes (`kept`, `soft_deleted`), and methods (`soft_delete!`, `undoable?`, `restore!`)               |
-| **Model Attribution Helper**   | `lib/active_record/undo/model_extension/attribution_helper.rb` | `AttributionHelper`  | Resolves user attribution and tenant context from parameters, configured procs, or thread contexts                                     |
-| **Tenant Verification**        | `lib/active_record/undo/model_extension/tenant_verification.rb`| `TenantVerification` | Validates initiating context against log tenant on `#restore!`, raising `SecurityError` on mismatch                                    |
-| **Cascade Engine**             | `lib/active_record/undo/cascade_handler.rb`                    | `CascadeHandler`     | Inspects ActiveRecord reflections (`reflections`) and executes DFS traversal                                                           |
-| **Cascade Association Finder** | `lib/active_record/undo/cascade_handler/association_finder.rb` | `AssociationFinder`  | Resolves which records should cascade based on dependency configuration                                                                |
-| **Cascade Record Updater**     | `lib/active_record/undo/cascade_handler/record_updater.rb`     | `RecordUpdater`      | Updates the database timestamps directly bypassing callbacks                                                                           |
-| **Audit Log Parent**           | `lib/active_record/undo/undo_log.rb`                           | `UndoLog`            | Represents the top-level deletion event and manages atomic batch restoration, tenancy, and user attribution                            |
-| **Audit Log Child**            | `lib/active_record/undo/undo_log_item.rb`                      | `UndoLogItem`        | Maps polymorphic targets (`item_type`, `item_id`) to original deleted entities                                                         |
-| **Engine Link**                | `lib/active_record/undo/engine.rb`                             | `Engine`             | Appends `db/migrate/` directly to host app migration paths                                                                             |
-| **Configuration**              | `lib/active_record/undo/configuration.rb`                      | `Configuration`      | Houses retention_period, current_user_method, and current_tenant_method settings                                                       |
-| **Purger Service**             | `lib/active_record/undo/purger.rb`                             | `Purger`             | Deletes expired UndoLog/Items and soft-deleted model records in batches, scoped to tenant context when present                         |
-| **Purger Reflection Helper**   | `lib/active_record/undo/purger/reflection_helper.rb`           | `ReflectionHelper`   | Determines cascade and nullify reflection behavior for purge routines                                                                  |
-| **Purge Job**                  | `lib/active_record/undo/purge_job.rb`                          | `PurgeJob`           | ActiveJob background runner invoking Purger                                                                                            |
-| **Rake Task**                  | `lib/active_record/undo/tasks/purge.rake`                      | Rake Task            | Exposes `active_record_undo:purge_expired` command                                                                                     |
+| Component                      | File Path                                                       | Class / Module       | Core Responsibility                                                                                                                    |
+| :----------------------------- | :-------------------------------------------------------------- | :------------------- | :------------------------------------------------------------------------------------------------------------------------------------- |
+| **Main Hook & Context**        | `lib/active_record/undo.rb`                                     | `ActiveRecord::Undo` | Hooks into `ActiveSupport.on_load(:active_record)`, manages ambient thread context (`whodunnit`, `current_tenant`), and defines errors |
+| **Model Extension**            | `lib/active_record/undo/model_extension.rb`                     | `ModelExtension`     | Injects DSL (`acts_as_undoable`), scopes (`kept`, `soft_deleted`), and methods (`soft_delete!`, `undoable?`, `restore!`)               |
+| **Model Attribution Helper**   | `lib/active_record/undo/model_extension/attribution_helper.rb`  | `AttributionHelper`  | Resolves user attribution and tenant context from parameters, configured procs, or thread contexts                                     |
+| **Tenant Verification**        | `lib/active_record/undo/model_extension/tenant_verification.rb` | `TenantVerification` | Validates initiating context against log tenant on `#restore!`, raising `SecurityError` on mismatch                                    |
+| **Cascade Engine**             | `lib/active_record/undo/cascade_handler.rb`                     | `CascadeHandler`     | Inspects ActiveRecord reflections (`reflections`) and executes DFS traversal                                                           |
+| **Cascade Association Finder** | `lib/active_record/undo/cascade_handler/association_finder.rb`  | `AssociationFinder`  | Resolves which records should cascade based on dependency configuration                                                                |
+| **Cascade Record Updater**     | `lib/active_record/undo/cascade_handler/record_updater.rb`      | `RecordUpdater`      | Updates the database timestamps directly bypassing callbacks                                                                           |
+| **Audit Log Parent**           | `lib/active_record/undo/undo_log.rb`                            | `UndoLog`            | Represents the top-level deletion event and manages atomic batch restoration, tenancy, and user attribution                            |
+| **Audit Log Child**            | `lib/active_record/undo/undo_log_item.rb`                       | `UndoLogItem`        | Maps polymorphic targets (`item_type`, `item_id`) to original deleted entities                                                         |
+| **Engine Link**                | `lib/active_record/undo/engine.rb`                              | `Engine`             | Appends `db/migrate/` directly to host app migration paths                                                                             |
+| **Configuration**              | `lib/active_record/undo/configuration.rb`                       | `Configuration`      | Houses retention_period, current_user_method, and current_tenant_method settings                                                       |
+| **Purger Service**             | `lib/active_record/undo/purger.rb`                              | `Purger`                | Deletes expired UndoLog/Items and soft-deleted model records in batches, scoped to tenant context when present                         |
+| **Purger Reflection Helper**   | `lib/active_record/undo/purger/reflection_helper.rb`            | `ReflectionHelper`      | Determines cascade and nullify reflection behavior for purge routines                                                                  |
+| **Purge Job**                  | `lib/active_record/undo/purge_job.rb`                           | `PurgeJob`              | ActiveJob background runner invoking Purger                                                                                            |
+| **Rake Task**                  | `lib/active_record/undo/tasks/purge.rake`                       | Rake Task               | Exposes `active_record_undo:purge_expired` command                                                                                     |
+| **Mountable Engine**           | `lib/active_record/undo/engine.rb`                              | `Engine`                | Defines mountable Rails engine route namespace, view helper hooks, and migrations                                                      |
+| **Open-Redirect Guard**        | `lib/active_record/undo/safe_redirect.rb`                       | `SafeRedirect`          | Enforces URL safety, same-host/port validation, CRLF blocking, and safe fallback paths                                                 |
+| **View Helpers**               | `lib/active_record/undo/view_helpers.rb`                        | `ViewHelpers`           | Provides `undo_button_to` and `undo_link_to` helpers with automatic model and signed token resolution                                  |
+| **Engine Base Controller**     | `app/controllers/active_record/undo/application_controller.rb`  | `ApplicationController` | Base engine controller handling CSRF, attribution, tenancy, and multi-format error responses                                           |
+| **HTTP Restoration Endpoints** | `app/controllers/active_record/undo/logs_controller.rb`         | `LogsController`        | Handles restore actions by ID or signed token for HTML, Turbo Stream, and JSON                                                         |
+| **Signed Restore Endpoint**    | `app/controllers/active_record/undo/restores_controller.rb`     | `RestoresController`    | Dedicated route endpoint for signed token restorations (`POST /undo/restore/:token`)                                                  |
 
 ---
 
@@ -191,6 +197,7 @@ sequenceDiagram
 7. **Tenant Matching Verification:** During `#restore!`, if `UndoLog` is associated with a tenant, the current tenant context is verified against the log's tenant before initiating restoration, raising `ActiveRecord::Undo::SecurityError` on mismatch to prevent cross-tenant data restores.
 8. **User Attribution Transparency:** `#soft_delete!` and `#restore!` support transparent user tracking via explicit keyword arguments or ambient context resolution (`Current.user` / Thread context).
 9. **Configured Context Enforcement:** When `current_user_method` or `current_tenant_method` is configured via `ActiveRecord::Undo.configure`, operations verify that the evaluated context is not `nil`. If any configured method evaluates to `nil`, `soft_delete!` and `restore!` immediately raise `ActiveRecord::Undo::SecurityError` to prevent unauthenticated or tenantless mutations.
+10. **Cryptographic Restore Tokens & Single-Use Semantics:** `UndoLog#signed_token` and `ModelExtension#signed_token` generate HMAC-SHA256 signed tokens using Rails' `message_verifier(:active_record_undo)` (configured with `ActiveRecord::Undo.config.token_expires_in`). The token encapsulates the log's ID with a purpose lock (`purpose: :restore`) and timestamp expiration (`exp`). When verified via `UndoLog.find_by_signed_token`, any payload alteration, purpose mismatch, or expiration automatically invalidates the token. Furthermore, because `#restore!` destroys the `UndoLog` database record upon completion, tokens automatically provide single-use replay protection: once restored, subsequent attempts to verify the same token find no corresponding database record, resulting in a `404 Not Found`. Even with a cryptographically authentic token, tenant boundary validation (`TenantVerification`) remains strictly enforced during restoration to prevent cross-tenant attacks.
 
 ---
 
@@ -235,6 +242,10 @@ sequenceDiagram
     1. Returns `false` immediately if `soft_deleted?` is `false`.
     2. Performs a lightweight SQL `EXISTS` query (`ActiveRecord::Undo::UndoLogItem.joins(:undo_log).exists?(item_type: self.class.name, item_id: id)`).
     3. Returns `true` if both the log item and its parent `UndoLog` exist in the database.
+* **`undo_log` / `latest_undo_log`**
+  * *Function*: Resolves the latest `UndoLog` audit record recording the soft deletion of this model instance via `find_latest_undo_log_item`. Returns `nil` if not soft-deleted or already purged/restored.
+* **`signed_token(expires_in: ...)` / `to_signed_token`**
+  * *Function*: Generates a cryptographic signed token using Rails' message verifier directly from the model instance for secure direct-link restorations.
 * **`soft_delete!(whodunnit: nil, tenant: nil)`**
   * *Function*: Starts the cascade soft-deletion sequence for the record.
   * *Parameters*:
@@ -315,14 +326,28 @@ sequenceDiagram
 
 ### 6.9 `lib/active_record/undo/undo_log.rb` (Batch Restoration)
 
-* **`restore!`**
+* **`restore!(whodunnit: nil)`**
   * *Function*: Triggers database restoration of the entire tree recorded under this log.
   * *Steps*:
     1. Invokes `ActiveRecord::Undo.verify_configured_context!` to enforce that configured context methods do not evaluate to `nil`.
-    2. Opens a database transaction block.
-    3. Iterates over associated `undo_log_items` in *reverse order* (`reverse_each`), guaranteeing parent records are restored before child records.
-    4. Invokes `#restore_item!` on each item.
-    5. Automatically calls `#destroy!` on completion to purge the audit records (`UndoLog` and nested `UndoLogItem` rows) from the database.
+    2. Enforces tenant verification if tenant association is present on the log.
+    3. Resolves `whodunnit` actor context.
+    4. Opens a database transaction block.
+    5. Iterates over associated `undo_log_items` in *reverse order* (`reverse_each`), guaranteeing parent records are restored before child records.
+    6. Invokes `#restore_item!` on each item.
+    7. Automatically calls `#destroy!` on completion to purge the audit records (`UndoLog` and nested `UndoLogItem` rows) from the database.
+* **`expired?`**
+  * *Function*: Checks whether `created_at` timestamp is older than `ActiveRecord::Undo.config.retention_period`.
+* **`signed_token(expires_in: ActiveRecord::Undo.config.token_expires_in, purpose: :restore)` / `to_signed_token`**
+  * *Function*: Generates a cryptographically signed, URL-safe token representing this `UndoLog` for direct link restorations.
+  * *Details*: Employs `self.class.token_verifier.generate(id, purpose: purpose, expires_in: expires_in)`.
+* **`.find_by_signed_token(token, purpose: :restore)`**
+  * *Function*: Verifies the cryptographic token signature and fetches the matching `UndoLog` database record.
+  * *Details*: Returns `nil` if the token is blank, expired, tampered with, has a mismatched purpose, or if the underlying `UndoLog` record no longer exists in the database.
+* **`.verify_signed_token(token, purpose: :restore)`**
+  * *Function*: Decodes and verifies the token payload via `token_verifier.verified(token, purpose: purpose)`. Catches `ActiveSupport::MessageVerifier::InvalidSignature` and returns `nil` on tampering or expiration.
+* **`.token_verifier`**
+  * *Function*: Provides the `ActiveSupport::MessageVerifier` instance used for token generation and verification. In Rails environments, utilizes `Rails.application.message_verifier(:active_record_undo)`. In standalone environments, falls back to an SHA256 verifier keyed to `ActiveRecord::Undo.config.token_secret_key`.
 * **`.for_whodunnit(user)`**
   * *Function*: Scopes logs to those deleted by a specific user/actor. Supports both model instances and raw IDs.
 * **`.for_tenant(tenant)`**
@@ -353,6 +378,11 @@ sequenceDiagram
     * `@retention_period`: Defaults to `30.days`.
     * `@current_user_method`: Defaults to `nil`. Callable proc to resolve the current user/actor.
     * `@current_tenant_method`: Defaults to `nil`. Callable proc to resolve the current tenant.
+    * `@base_controller`: Defaults to `"::ApplicationController"`. Base controller for engine authentication and authorization hooks.
+    * `@default_redirect_path`: Defaults to lambda resolving `main_app.root_path` (falling back to `'/'`).
+    * `@token_expires_in`: Defaults to `24.hours`. Lifespan for signed direct-link restore tokens.
+    * `@token_secret_key`: Defaults to `nil` (uses Rails application verifier).
+    * `@error_handling`: Defaults to `:auto`. Controls whether HTML requests redirect on error or render status codes.
 
 ### 6.12 `lib/active_record/undo/purger.rb` (Hard Purging Engine)
 
@@ -383,3 +413,47 @@ sequenceDiagram
 * **`active_record_undo:purge_expired`**
   * *Function*: Exposes CLI Rake task for the purger engine.
   * *Details*: Checks `ENV['BATCH_SIZE']` for custom batch sizes, falling back to 1000, and triggers `ActiveRecord::Undo::Purger.purge_expired!`.
+
+### 6.16 `lib/active_record/undo/engine.rb` (Mountable Rails Engine)
+
+* **`ActiveRecord::Undo::Engine`**
+  * *Function*: Rails engine that defines isolated namespace `ActiveRecord::Undo` and mounts routes.
+  * *Details*:
+    * Automatically hooks view helpers into ActionView via `ActiveSupport.on_load(:action_view)`.
+    * Registers `:turbo_stream` MIME type (`text/vnd.turbo-stream.html`) when not already defined.
+    * Appends gem migrations to host app's migration paths.
+
+### 6.17 `lib/active_record/undo/safe_redirect.rb` (Open-Redirect Prevention)
+
+* **`determine_redirect_path` (Private)**
+  * *Function*: Determines safe target path in priority: validated `params[:redirect_to]`, validated `request.referer`, or `resolve_fallback_path`.
+* **`safe_redirect_path(path)` (Private)**
+  * *Function*: Validates URL to strictly allow relative paths or same-host/port absolute URLs, preventing open redirect vulnerabilities. Automatically rejects CRLF characters (`\r`, `\n`) and non-HTTP/HTTPS schemes (e.g. `javascript:`, `data:`).
+
+### 6.18 `lib/active_record/undo/view_helpers.rb` (ERB View Helpers)
+
+* **`undo_button_to(target, text = nil, signed: false, **html_options)`**
+  * *Function*: Renders a `button_to` form targeting `active_record_undo.restore_log_path` or `signed_restore_path`.
+* **`undo_link_to(target, text = nil, signed: false, **html_options)`**
+  * *Function*: Renders an anchor tag configured with `data: { turbo_method: :post }` for Turbo and UJS compatibility.
+* **`extract_log_target(target)` (Private)**
+  * *Function*: Safely extracts the target `UndoLog`. When passed an ActiveRecord model, verifies that the model is soft-deleted and has an associated undo log, raising `ArgumentError` if active or unpersisted to prevent erroneous routing with the model's primary key.
+
+### 6.19 `app/controllers/active_record/undo/application_controller.rb` (Engine Base Controller)
+
+* **`ApplicationController`**
+  * *Function*: Inherits from `ActiveRecord::Undo.base_controller_class` with CSRF protection enabled.
+  * *Details*: Handles tenant resolution, whodunnit resolution, open redirect verification, and graceful error responses (HTML, Turbo Stream, JSON).
+
+### 6.20 `app/controllers/active_record/undo/logs_controller.rb` & `restores_controller.rb` (HTTP Endpoints)
+
+* **`LogsController#restore`**
+  * *Function*: Finds undo log by ID or signed token, checks expiration and permissions, executes restoration, and returns format-specific response (emitting `303 See Other` on HTML redirect for Turbo Drive compatibility).
+* **`LogsController#find_undo_log` (Private)**
+  * *Function*: Resolves the target `UndoLog` from request parameters. If `params[:token]` is present, calls `UndoLog.find_by_signed_token(params[:token])`. If `params[:id]` is present, delegates to `find_by_id_or_token`.
+* **`LogsController#find_by_id_or_token(identifier)` (Private)**
+  * *Function*: Dual-lookup resolver. If `identifier` consists purely of numeric digits or matches a UUID format, fetches via `UndoLog.find_by(id: identifier)`. For all other string formats, safely routes to `UndoLog.find_by_signed_token(identifier)` without triggering database type exceptions.
+* **`LogsController#execute_restore_action` (Private)**
+  * *Function*: Wraps `@undo_log.restore!(whodunnit: resolve_whodunnit_user)` inside tenant context (`with_tenant_context`) to enforce multi-tenant security during restoration.
+* **`RestoresController#create`**
+  * *Function*: Dedicated HTTP endpoint for signed token restorations (`POST /undo/restore/:token`). Inherits from `LogsController` and executes `#restore`.

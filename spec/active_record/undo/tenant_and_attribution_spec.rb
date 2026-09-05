@@ -171,6 +171,15 @@ RSpec.describe 'Multi-Tenant Isolation & User Attribution' do
           /Tenant mismatch: log belongs to tenant Account##{account_1.id}, but current context tenant is nil\./
         )
       end
+
+      it 'raises ActiveRecord::Undo::SecurityError if restore context is an empty or whitespace string' do
+        ActiveRecord::Undo.current_tenant = '   '
+
+        expect { tenant_post.restore! }.to raise_error(
+          ActiveRecord::Undo::SecurityError,
+          /Tenant mismatch/
+        )
+      end
     end
   end
 

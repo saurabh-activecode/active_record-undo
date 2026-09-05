@@ -8,7 +8,7 @@ module ActiveRecord
 
         def verify_tenant_match!(undo_log)
           ctx = current_tenant_context
-          raise_tenant_mismatch!(undo_log, 'nil') if ctx.nil?
+          raise_tenant_mismatch!(undo_log, 'nil') if ctx.blank?
 
           return if tenant_matches?(undo_log, ctx)
 
