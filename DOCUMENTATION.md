@@ -315,14 +315,22 @@ sequenceDiagram
 
 ### 6.9 `lib/active_record/undo/undo_log.rb` (Batch Restoration)
 
-* **`restore!`**
+* **`restore!(whodunnit: nil)`**
   * *Function*: Triggers database restoration of the entire tree recorded under this log.
   * *Steps*:
     1. Invokes `ActiveRecord::Undo.verify_configured_context!` to enforce that configured context methods do not evaluate to `nil`.
-    2. Opens a database transaction block.
-    3. Iterates over associated `undo_log_items` in *reverse order* (`reverse_each`), guaranteeing parent records are restored before child records.
-    4. Invokes `#restore_item!` on each item.
-    5. Automatically calls `#destroy!` on completion to purge the audit records (`UndoLog` and nested `UndoLogItem` rows) from the database.
+    2. Enforces tenant verification if tenant association is present on the log.
+    3. Resolves `whodunnit` actor context.
+    4. Opens a database transaction block.
+    5. Iterates over associated `undo_log_items` in *reverse order* (`reverse_each`), guaranteeing parent records are restored before child records.
+    6. Invokes `#restore_item!` on each item.
+    7. Automatically calls `#destroy!` on completion to purge the audit records (`UndoLog` and nested `UndoLogItem` rows) from the database.
+* **`expired?`**
+  * *Function*: Checks whether `created_at` timestamp is older than `ActiveRecord::Undo.config.retention_period`.
+* **`signed_token(expires_in: ...)`**
+  * *Function*: Generates a cryptographically signed token using Rails' message verifier for secure direct link restoration.
+* **`.find_by_signed_token(token, purpose: :restore)`**
+  * *Function*: Verifies the cryptographic token signature and fetches the matching `UndoLog`.
 * **`.for_whodunnit(user)`**
   * *Function*: Scopes logs to those deleted by a specific user/actor. Supports both model instances and raw IDs.
 * **`.for_tenant(tenant)`**
@@ -353,6 +361,11 @@ sequenceDiagram
     * `@retention_period`: Defaults to `30.days`.
     * `@current_user_method`: Defaults to `nil`. Callable proc to resolve the current user/actor.
     * `@current_tenant_method`: Defaults to `nil`. Callable proc to resolve the current tenant.
+    * `@base_controller`: Defaults to `"::ApplicationController"`. Base controller for engine authentication and authorization hooks.
+    * `@default_redirect_path`: Defaults to lambda resolving `main_app.root_path` (falling back to `'/'`).
+    * `@token_expires_in`: Defaults to `24.hours`. Lifespan for signed direct-link restore tokens.
+    * `@token_secret_key`: Defaults to `nil` (uses Rails application verifier).
+    * `@error_handling`: Defaults to `:auto`. Controls whether HTML requests redirect on error or render status codes.
 
 ### 6.12 `lib/active_record/undo/purger.rb` (Hard Purging Engine)
 
@@ -383,3 +396,40 @@ sequenceDiagram
 * **`active_record_undo:purge_expired`**
   * *Function*: Exposes CLI Rake task for the purger engine.
   * *Details*: Checks `ENV['BATCH_SIZE']` for custom batch sizes, falling back to 1000, and triggers `ActiveRecord::Undo::Purger.purge_expired!`.
+
+### 6.16 `lib/active_record/undo/engine.rb` (Mountable Rails Engine)
+
+* **`ActiveRecord::Undo::Engine`**
+  * *Function*: Rails engine that defines isolated namespace `ActiveRecord::Undo` and mounts routes.
+  * *Details*:
+    * Automatically hooks view helpers into ActionView via `ActiveSupport.on_load(:action_view)`.
+    * Registers `:turbo_stream` MIME type (`text/vnd.turbo-stream.html`) when not already defined.
+    * Appends gem migrations to host app's migration paths.
+
+### 6.17 `lib/active_record/undo/safe_redirect.rb` (Open-Redirect Prevention)
+
+* **`determine_redirect_path` (Private)**
+  * *Function*: Determines safe target path in priority: validated `params[:redirect_to]`, validated `request.referer`, or `resolve_fallback_path`.
+* **`safe_redirect_path(path)` (Private)**
+  * *Function*: Validates URL to strictly allow relative paths or same-host/port absolute URLs, preventing open redirect vulnerabilities.
+
+### 6.18 `lib/active_record/undo/view_helpers.rb` (ERB View Helpers)
+
+* **`undo_button_to(target, text = nil, signed: false, **html_options)`**
+  * *Function*: Renders a `button_to` form targeting `active_record_undo.restore_log_path` or `signed_restore_path`.
+* **`undo_link_to(target, text = nil, signed: false, **html_options)`**
+  * *Function*: Renders an anchor tag configured with `data: { turbo_method: :post }` for Turbo and UJS compatibility.
+
+### 6.19 `app/controllers/active_record/undo/application_controller.rb` (Engine Base Controller)
+
+* **`ApplicationController`**
+  * *Function*: Inherits from `ActiveRecord::Undo.base_controller_class` with CSRF protection enabled.
+  * *Details*: Handles tenant resolution, whodunnit resolution, open redirect verification, and graceful error responses (HTML, Turbo Stream, JSON).
+
+### 6.20 `app/controllers/active_record/undo/logs_controller.rb` & `restores_controller.rb` (HTTP Endpoints)
+
+* **`LogsController#restore`**
+  * *Function*: Finds undo log by ID or signed token, checks expiration and permissions, executes restoration, and returns format-specific response.
+* **`RestoresController#create`**
+  * *Function*: Dedicated endpoint for signed token restorations (`POST /undo/restore/:token`).
+

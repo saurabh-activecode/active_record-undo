@@ -40,6 +40,14 @@ module ActiveRecord
             attrs[:tenant_id] = ten
           end
         end
+
+        def with_whodunnit_context(actor)
+          orig = ActiveRecord::Undo.whodunnit
+          ActiveRecord::Undo.whodunnit = actor
+          yield
+        ensure
+          ActiveRecord::Undo.whodunnit = orig
+        end
       end
     end
   end

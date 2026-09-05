@@ -4,9 +4,9 @@
 require 'combustion'
 require 'active_record'
 
-# Initialize combustion dummy application with active_record
+# Initialize combustion dummy application with active_record, action_controller, and action_view
 Combustion.path = 'spec/internal'
-Combustion.initialize! :active_record
+Combustion.initialize! :active_record, :action_controller, :action_view
 
 require 'rspec/rails'
 require 'active_record/undo'
