@@ -15,11 +15,11 @@ require_relative 'undo/engine' if defined?(Rails::Engine)
 require_relative 'undo/view_helpers' if defined?(ActionView)
 require_relative 'undo/configuration'
 require_relative 'undo/safe_redirect'
+require_relative 'undo/status_predicates'
 require_relative 'undo/model_extension'
 require_relative 'undo/undo_log'
 require_relative 'undo/undo_log_item'
 require_relative 'undo/purger'
-require_relative 'undo/purge_job'
 
 module ActiveRecord
   module Undo
@@ -98,6 +98,17 @@ module ActiveRecord
         defined?(ActionController::Base) ? ActionController::Base : Object
       end
 
+      def base_job_class
+        configured = config.base_job
+        return configured if configured.is_a?(Class)
+
+        (configured.presence && configured.to_s.safe_constantize) || default_base_job
+      end
+
+      def default_base_job
+        defined?(ActiveJob::Base) ? ActiveJob::Base : Object
+      end
+
       private
 
       def eager_load_rails!
@@ -109,6 +120,18 @@ module ActiveRecord
       end
     end
   end
+end
+
+begin
+  require 'active_job'
+rescue LoadError
+  # ActiveJob is optional
+end
+
+if defined?(ActiveJob::Base)
+  require_relative 'undo/purge_job'
+  require_relative '../../app/jobs/active_record/undo/soft_delete_job'
+  require_relative '../../app/jobs/active_record/undo/restore_job'
 end
 
 if defined?(ActiveSupport)

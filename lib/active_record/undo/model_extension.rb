@@ -4,6 +4,7 @@
 require_relative 'cascade_handler'
 require_relative 'model_extension/attribution_helper'
 require_relative 'model_extension/tenant_verification'
+require_relative 'model_extension/async_methods'
 
 module ActiveRecord
   module Undo
@@ -53,6 +54,8 @@ module ActiveRecord
       module InstanceMethods
         include AttributionHelper
         include TenantVerification
+        include AsyncMethods
+        include StatusPredicates
 
         def soft_deleted?
           public_send(self.class.undoable_column).present?
@@ -71,10 +74,10 @@ module ActiveRecord
         def undoable?
           return false unless persisted? && soft_deleted?
 
-          ActiveRecord::Undo::UndoLogItem.joins(:undo_log).exists?(
-            item_type: self.class.name,
-            item_id: id
-          )
+          log = undo_log
+          return false unless log
+
+          log.respond_to?(:completed?) ? log.completed? : true
         end
 
         def undo_log

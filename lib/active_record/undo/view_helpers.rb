@@ -1,8 +1,12 @@
 # frozen_string_literal: true
 
+require_relative 'view_helpers/status_badge_helper'
+
 module ActiveRecord
   module Undo
     module ViewHelpers
+      include StatusBadgeHelper
+
       def undo_button_to(target, text = nil, signed: false, **html_options)
         btn_text = extract_undo_text(text, html_options)
         url = resolve_undo_path(target, signed: signed)

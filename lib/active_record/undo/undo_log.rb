@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-require 'active_support/message_verifier'
+require_relative 'undo_log/token_verifier'
 
 module ActiveRecord
   module Undo
@@ -9,11 +9,16 @@ module ActiveRecord
 
       include ModelExtension::AttributionHelper
       include ModelExtension::TenantVerification
+      include TokenVerifier
+      include StatusPredicates
 
       has_many :undo_log_items, class_name: 'ActiveRecord::Undo::UndoLogItem', dependent: :destroy
 
       belongs_to :whodunnit, polymorphic: true, optional: true
       belongs_to :tenant, polymorphic: true, optional: true
+
+      enum :status, { pending: 0, processing: 1, completed: 2, failed: 3 }, default: :completed
+      enum :action, { soft_delete: 0, restore: 1 }, default: :soft_delete
 
       scope :for_whodunnit, lambda { |user|
         if user.is_a?(ActiveRecord::Base)
@@ -40,34 +45,6 @@ module ActiveRecord
         end
       }
 
-      def self.find_by_signed_token(token, purpose: :restore)
-        return nil unless token.is_a?(String) && token.present?
-
-        verified_id = verify_signed_token(token, purpose: purpose)
-        return nil unless verified_id
-
-        find_by(id: verified_id)
-      rescue StandardError
-        nil
-      end
-
-      def self.verify_signed_token(token, purpose: :restore)
-        return nil unless token.is_a?(String) && token.present?
-
-        token_verifier.verified(token, purpose: purpose)
-      rescue StandardError
-        nil
-      end
-
-      def self.token_verifier
-        if defined?(Rails.application) && Rails.application.respond_to?(:message_verifier)
-          Rails.application.message_verifier(:active_record_undo)
-        else
-          key = ActiveRecord::Undo.config.token_secret_key || 'active_record_undo_default_secret_key_32_bytes'
-          @token_verifier ||= ActiveSupport::MessageVerifier.new(key, digest: 'SHA256')
-        end
-      end
-
       def expired?
         period = ActiveRecord::Undo.config.retention_period
         return false unless period && created_at
@@ -75,15 +52,32 @@ module ActiveRecord
         created_at < Time.current - period
       end
 
-      def signed_token(expires_in: ActiveRecord::Undo.config.token_expires_in, purpose: :restore)
-        self.class.token_verifier.generate(id, purpose: purpose, expires_in: expires_in)
+      def soft_delete_status
+        return status if action == 'soft_delete' || action.nil?
+
+        'completed'
       end
-      alias to_signed_token signed_token
+
+      def restore_status
+        return status if action == 'restore'
+
+        nil
+      end
+
+      def restore_later!(whodunnit: nil, queue: nil)
+        verify_restore_preconditions!
+        with_lock do
+          validate_restore_status_eligibility!
+          update!(action: :restore, status: :pending)
+        end
+        enqueue_restore_job!(whodunnit, queue)
+        self
+      end
 
       # Restores all records associated with this deletion batch
       def restore!(whodunnit: nil)
-        ActiveRecord::Undo.verify_configured_context!
-        verify_tenant_match!(self) if tenant_present?
+        verify_restore_preconditions!
+        validate_restore_status_eligibility!
 
         actor = resolve_whodunnit(whodunnit)
         with_whodunnit_context(actor) do
@@ -92,6 +86,29 @@ module ActiveRecord
       end
 
       private
+
+      def verify_restore_preconditions!
+        ActiveRecord::Undo.verify_configured_context!
+        verify_tenant_match!(self) if tenant_present?
+        raise ActiveRecord::Undo::Error, 'Undo action has expired.' if expired?
+      end
+
+      def validate_restore_status_eligibility!
+        raise ActiveRecord::Undo::Error, 'Cannot restore: UndoLog is currently processing.' if processing?
+
+        if pending? && action == 'restore'
+          raise ActiveRecord::Undo::Error, 'Cannot restore: UndoLog is already scheduled for restore.'
+        end
+        return if completed?
+
+        raise ActiveRecord::Undo::Error, "Cannot restore: UndoLog is not completed (current status: #{status})."
+      end
+
+      def enqueue_restore_job!(whodunnit, queue)
+        job_class = ActiveRecord::Undo::RestoreJob
+        job = queue.present? ? job_class.set(queue: queue) : job_class
+        job.perform_later(id, whodunnit: whodunnit)
+      end
 
       def tenant_present?
         tenant_id.present? || tenant_type.present?

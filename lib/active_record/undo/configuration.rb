@@ -4,7 +4,7 @@ module ActiveRecord
   module Undo
     class Configuration
       attr_accessor :retention_period, :current_user_method, :current_tenant_method,
-                    :base_controller, :default_redirect_path, :token_secret_key,
+                    :base_controller, :base_job, :default_redirect_path, :token_secret_key,
                     :token_expires_in, :error_handling
 
       def initialize
@@ -12,6 +12,7 @@ module ActiveRecord
         @current_user_method = nil
         @current_tenant_method = nil
         @base_controller = '::ApplicationController'
+        @base_job = '::ActiveJob::Base'
         @default_redirect_path = ->(main_app) { main_app.respond_to?(:root_path) ? main_app.root_path : '/' }
         @token_secret_key = nil
         @token_expires_in = 24.hours

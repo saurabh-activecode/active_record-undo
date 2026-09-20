@@ -9,6 +9,7 @@ module ActiveRecord
 
       protect_from_forgery with: :exception, unless: -> { request.format.json? }
 
+      rescue_from ActiveRecord::Undo::Error, with: :handle_undo_error
       rescue_from ActiveRecord::Undo::SecurityError, with: :handle_security_error
 
       private
@@ -38,6 +39,14 @@ module ActiveRecord
           format.html { handle_html_error(error.message, :forbidden) }
           format.turbo_stream { render_turbo_stream_error(error.message, :forbidden) }
           format.json { render json: { error: error.message }, status: :forbidden }
+        end
+      end
+
+      def handle_undo_error(error)
+        respond_to do |format|
+          format.html { handle_html_error(error.message, :unprocessable_entity) }
+          format.turbo_stream { render_turbo_stream_error(error.message, :unprocessable_entity) }
+          format.json { render json: { error: error.message }, status: :unprocessable_entity }
         end
       end
 

@@ -1,8 +1,12 @@
 # frozen_string_literal: true
 
+require_relative 'logs_controller/async_handler'
+
 module ActiveRecord
   module Undo
     class LogsController < ApplicationController
+      include AsyncHandler
+
       before_action :set_undo_log
       before_action :check_not_found
       before_action :check_expired
@@ -10,9 +14,23 @@ module ActiveRecord
       def restore
         return unless @undo_log
 
-        count = @undo_log.undo_log_items.count
-        execute_restore_action
-        respond_with_restored_log(count)
+        if async_request?
+          execute_async_restore_action
+          respond_with_async_restore_scheduled
+        else
+          count = @undo_log.undo_log_items.count
+          execute_restore_action
+          respond_with_restored_log(count)
+        end
+      end
+
+      def status
+        return unless @undo_log
+
+        respond_to do |format|
+          format.json { render json: log_status_payload, status: :ok }
+          format.html { render plain: @undo_log.status, status: :ok }
+        end
       end
 
       private

@@ -35,6 +35,7 @@ Gem::Specification.new do |spec|
   spec.require_paths = ['lib']
 
   # Runtime Dependencies
+  spec.add_dependency 'activejob', '>= 7.0.0'
   spec.add_dependency 'activerecord', '>= 7.0.0'
 
   # Development Dependencies
