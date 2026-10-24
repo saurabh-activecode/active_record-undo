@@ -10,6 +10,7 @@ module ActiveRecord
       before_action :set_undo_log
       before_action :check_not_found
       before_action :check_expired
+      before_action :check_tenant_access
 
       def restore
         return unless @undo_log
@@ -45,6 +46,16 @@ module ActiveRecord
 
       def check_expired
         handle_expired if @undo_log&.expired?
+      end
+
+      def check_tenant_access
+        tenant = resolve_current_tenant
+        with_tenant_context(tenant) do
+          ActiveRecord::Undo.verify_configured_context!
+          return unless @undo_log && (@undo_log.tenant_id.present? || @undo_log.tenant_type.present?)
+
+          @undo_log.send(:verify_tenant_match!, @undo_log)
+        end
       end
 
       def find_undo_log

@@ -638,6 +638,10 @@ ActiveRecord::Undo.configure do |config|
   # Defaults to "::ApplicationController" if defined, falling back to ActionController::Base
   config.base_controller = "::ApplicationController"
 
+  # Base job class for asynchronous workers (SoftDeleteJob, RestoreJob, PurgeJob)
+  # Defaults to "::ActiveJob::Base"
+  config.base_job = "::ActiveJob::Base"
+
   # Fallback redirect path after successful restore when no redirect_to or referer exists
   config.default_redirect_path = ->(main_app) { main_app.root_path }
 

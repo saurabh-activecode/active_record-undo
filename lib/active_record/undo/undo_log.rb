@@ -99,7 +99,7 @@ module ActiveRecord
         if pending? && action == 'restore'
           raise ActiveRecord::Undo::Error, 'Cannot restore: UndoLog is already scheduled for restore.'
         end
-        return if completed?
+        return if completed? || (action == 'restore' && failed?)
 
         raise ActiveRecord::Undo::Error, "Cannot restore: UndoLog is not completed (current status: #{status})."
       end

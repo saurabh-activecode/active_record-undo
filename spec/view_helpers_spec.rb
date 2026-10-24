@@ -143,4 +143,46 @@ RSpec.describe ActiveRecord::Undo::ViewHelpers, type: :helper do
       expect(unpersisted.undoable?).to be false
     end
   end
+
+  describe 'Status Badge ViewHelpers in ViewContext' do
+    it 'renders soft delete and restore status badges with html attributes' do
+      log = ActiveRecord::Undo::UndoLog.create!(action: :soft_delete, status: :completed)
+      badge = view_context.undo_status_badge(log, class: 'extra-class', id: 'status-tag', data: { testid: '123' })
+
+      expect(badge).to include('class="undo-status-badge undo-soft-delete-badge undo-status-completed extra-class"')
+      expect(badge).to include('id="status-tag"')
+      expect(badge).to include('data-testid="123"')
+      expect(badge).to include('>Completed</span>')
+    end
+
+    it 'returns nil safely when passed nil or inactive records' do
+      expect(view_context.undo_status_badge(nil)).to be_nil
+      expect(view_context.soft_delete_status_badge(nil)).to be_nil
+      expect(view_context.restore_status_badge(nil)).to be_nil
+
+      active_post = Post.create!(title: 'Active Badge Post')
+      expect(view_context.undo_status_badge(active_post)).to be_nil
+      expect(view_context.soft_delete_status_badge(active_post)).to be_nil
+      expect(view_context.restore_status_badge(active_post)).to be_nil
+    end
+
+    it 'returns nil safely for plain objects without status methods' do
+      expect(view_context.undo_status_badge(Object.new)).to be_nil
+      expect(view_context.soft_delete_status_badge(Object.new)).to be_nil
+      expect(view_context.restore_status_badge(Object.new)).to be_nil
+    end
+
+    it 'supports explicit action overrides and custom label text' do
+      post = Post.create!(title: 'Badge Post')
+      post.soft_delete_later!
+
+      badge = view_context.soft_delete_status_badge(post, text: 'Custom Pending Label')
+      expect(badge).to include('>Custom Pending Label</span>')
+      expect(badge).to include('undo-soft-delete-badge')
+      expect(badge).to include('undo-status-pending')
+
+      res_badge = view_context.restore_status_badge(post)
+      expect(res_badge).to be_nil
+    end
+  end
 end

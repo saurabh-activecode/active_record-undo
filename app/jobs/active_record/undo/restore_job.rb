@@ -27,7 +27,7 @@ module ActiveRecord
       def lock_and_start_processing!(undo_log)
         undo_log.with_lock do
           return false if undo_log.processing?
-          return false unless undo_log.pending?
+          return false if undo_log.completed?
 
           undo_log.update!(status: :processing)
           true
@@ -37,9 +37,20 @@ module ActiveRecord
       def execute_restore_batches(undo_log, whodunnit)
         actor = undo_log.send(:resolve_whodunnit, whodunnit)
         undo_log.send(:with_whodunnit_context, actor) do
-          restore_all_items_in_batches(undo_log)
-          cleanup_log!(undo_log)
+          with_tenant_context(undo_log) do
+            restore_all_items_in_batches(undo_log)
+            cleanup_log!(undo_log)
+          end
         end
+      end
+
+      def with_tenant_context(undo_log)
+        ten = undo_log.tenant || undo_log.tenant_id
+        orig = ActiveRecord::Undo.current_tenant
+        ActiveRecord::Undo.current_tenant = ten if ten.present?
+        yield
+      ensure
+        ActiveRecord::Undo.current_tenant = orig
       end
 
       def restore_all_items_in_batches(undo_log)

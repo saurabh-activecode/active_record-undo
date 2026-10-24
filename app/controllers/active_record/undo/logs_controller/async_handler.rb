@@ -39,7 +39,9 @@ module ActiveRecord
             status: @undo_log.status,
             soft_delete_status: @undo_log.soft_delete_status,
             restore_status: @undo_log.restore_status,
-            error_message: @undo_log.error_message
+            error_message: @undo_log.error_message,
+            completed: @undo_log.completed?,
+            failed: @undo_log.failed?
           }
         end
       end

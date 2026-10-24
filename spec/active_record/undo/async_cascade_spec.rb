@@ -294,5 +294,272 @@ RSpec.describe 'Asynchronous Cascades and Status Helpers' do
       res_badge = restore_status_badge(post)
       expect(res_badge).to be_nil
     end
+
+    it 'returns nil safely when passed nil' do
+      expect(undo_status_badge(nil)).to be_nil
+      expect(soft_delete_status_badge(nil)).to be_nil
+      expect(restore_status_badge(nil)).to be_nil
+      expect(undo_status_badge(nil, action: :soft_delete)).to be_nil
+      expect(undo_status_badge(nil, action: :restore)).to be_nil
+    end
+
+    it 'returns nil for objects without status or soft_delete_status' do
+      expect(undo_status_badge(Object.new)).to be_nil
+      expect(soft_delete_status_badge(Object.new)).to be_nil
+      expect(restore_status_badge(Object.new)).to be_nil
+    end
+  end
+
+  describe 'Edge Cases & Advanced Scenarios' do
+    describe '#soft_delete_later! edge cases' do
+      it 'returns false if record is already soft-deleted' do
+        post.soft_delete_later!
+        expect(post.soft_delete_later!).to be false
+      end
+
+      it 'raises SecurityError when configured context method returns nil' do
+        ActiveRecord::Undo.configure do |config|
+          config.current_user_method = -> {}
+        end
+
+        expect do
+          post.soft_delete_later!
+        end.to raise_error(ActiveRecord::Undo::SecurityError, /current_user_method returned nil/)
+      ensure
+        ActiveRecord::Undo.configure { |c| c.current_user_method = nil }
+      end
+
+      it 'raises Error when configured soft-delete column does not exist' do
+        allow(Post).to receive(:undoable_column).and_return(:missing_deleted_at)
+        expect do
+          post.soft_delete_later!
+        end.to raise_error(
+          ActiveRecord::Undo::Error,
+          /configured soft-delete column 'missing_deleted_at' does not exist/
+        )
+      end
+
+      it 'stores actor and tenant in UndoLog and enqueues job with attribution' do
+        undo_log = post.soft_delete_later!(whodunnit: user, tenant: account)
+        expect(undo_log.whodunnit).to eq(user)
+        expect(undo_log.tenant).to eq(account)
+
+        expect(ActiveRecord::Undo::SoftDeleteJob).to have_been_enqueued.with(
+          'Post', post.id, undo_log.id, whodunnit: user, tenant: account
+        )
+      end
+    end
+
+    describe 'SoftDeleteJob edge cases' do
+      it 'skips execution if undo_log is already processing or completed' do
+        undo_log = post.soft_delete_later!
+        undo_log.update_columns(status: 1) # processing
+
+        expect do
+          ActiveRecord::Undo::SoftDeleteJob.new.perform('Post', post.id, undo_log.id)
+        end.not_to change(ActiveRecord::Undo::UndoLogItem, :count)
+
+        undo_log.update_columns(status: 2) # completed
+        expect do
+          ActiveRecord::Undo::SoftDeleteJob.new.perform('Post', post.id, undo_log.id)
+        end.not_to change(ActiveRecord::Undo::UndoLogItem, :count)
+      end
+
+      it 'returns cleanly if undo_log does not exist' do
+        expect do
+          ActiveRecord::Undo::SoftDeleteJob.new.perform('Post', post.id, 999_999)
+        end.not_to raise_error
+      end
+
+      it 'marks log as failed if target record does not exist' do
+        undo_log = post.soft_delete_later!
+        expect do
+          ActiveRecord::Undo::SoftDeleteJob.new.perform('Post', 999_999, undo_log.id)
+        end.to raise_error(ActiveRecord::RecordNotFound)
+
+        expect(undo_log.reload.failed?).to be true
+        expect(undo_log.error_message).to match(/Couldn't find Post with 'id'=999999/i)
+      end
+
+      it 'allows retrying a previously failed soft-delete job' do
+        undo_log = post.soft_delete_later!
+        undo_log.update_columns(status: 3, error_message: 'Transient network failure') # failed
+
+        ActiveRecord::Undo::SoftDeleteJob.new.perform('Post', post.id, undo_log.id)
+        expect(undo_log.reload.completed?).to be true
+        expect(comment_1.reload.soft_deleted?).to be true
+      end
+
+      it 'hard-destroys non-undoable dependent: :destroy associated records' do
+        tag = post.tags.create!(name: 'Ruby')
+        post.soft_delete_later!
+        perform_enqueued_jobs
+
+        expect(post.reload.soft_deleted?).to be true
+        expect(Tag.find_by(id: tag.id)).to be_nil
+      end
+    end
+
+    describe '#restore_later! edge cases' do
+      it 'returns false if record is not soft-deleted' do
+        expect(post.restore_later!).to be false
+      end
+
+      it 'raises Error if record was manually soft-deleted without an undo log' do
+        post.update_columns(deleted_at: Time.current)
+        expect do
+          post.restore_later!
+        end.to raise_error(ActiveRecord::Undo::Error, 'No undo log found to restore.')
+      end
+
+      it 'raises Error if undo log has expired' do
+        undo_log = post.soft_delete_later!
+        perform_enqueued_jobs
+        undo_log.update_columns(created_at: 35.days.ago)
+
+        expect do
+          post.restore_later!
+        end.to raise_error(ActiveRecord::Undo::Error, 'Undo action has expired.')
+      end
+
+      it 'raises SecurityError if tenant does not match' do
+        tenant_post = Post.create!(title: 'Tenant Async Post', tenant: account)
+        tenant_post.soft_delete_later!(tenant: account)
+        perform_enqueued_jobs
+
+        other_account = Account.create!(name: 'Other Tenant')
+        ActiveRecord::Undo.current_tenant = other_account
+
+        expect do
+          tenant_post.restore_later!
+        end.to raise_error(ActiveRecord::Undo::SecurityError, /Tenant mismatch/)
+      ensure
+        ActiveRecord::Undo.current_tenant = nil
+      end
+
+      it 'raises Error when trying to restore a log that failed during soft delete' do
+        undo_log = post.soft_delete_later!
+        undo_log.update_columns(status: 3) # failed
+
+        expect do
+          post.restore_later!
+        end.to raise_error(ActiveRecord::Undo::Error, /Cannot restore: UndoLog is not completed/)
+      end
+
+      it 'allows retrying a failed restore operation' do
+        undo_log = post.soft_delete_later!
+        perform_enqueued_jobs
+        undo_log.reload
+
+        # Simulate failed restore attempt
+        undo_log.update_columns(action: 1, status: 3, error_message: 'Deadlock encountered')
+
+        # Retry restore_later!
+        retried_log = undo_log.restore_later!
+        expect(retried_log.status).to eq('pending')
+        expect(ActiveRecord::Undo::RestoreJob).to have_been_enqueued.with(undo_log.id, whodunnit: nil)
+
+        perform_enqueued_jobs
+        expect(post.reload.soft_deleted?).to be false
+        expect(ActiveRecord::Undo::UndoLog.find_by(id: undo_log.id)).to be_nil
+      end
+
+      it 'allows retrying a failed restore operation synchronously' do
+        undo_log = post.soft_delete_later!
+        perform_enqueued_jobs
+        undo_log.reload
+
+        # Simulate failed restore attempt
+        undo_log.update_columns(action: 1, status: 3, error_message: 'Deadlock encountered')
+
+        # Synchronous retry
+        undo_log.restore!
+        expect(post.reload.soft_deleted?).to be false
+        expect(ActiveRecord::Undo::UndoLog.find_by(id: undo_log.id)).to be_nil
+      end
+    end
+
+    describe 'RestoreJob edge cases' do
+      before do
+        post.soft_delete_later!
+        perform_enqueued_jobs
+      end
+
+      it 'skips execution if undo_log is already processing' do
+        undo_log = post.undo_log
+        undo_log.restore_later!
+        undo_log.update_columns(status: 1) # processing
+
+        expect do
+          ActiveRecord::Undo::RestoreJob.new.perform(undo_log.id)
+        end.not_to change(ActiveRecord::Undo::UndoLogItem, :count)
+      end
+
+      it 'returns cleanly if undo_log_id does not exist' do
+        expect do
+          ActiveRecord::Undo::RestoreJob.new.perform(999_999)
+        end.not_to raise_error
+      end
+
+      it 'sets tenant context during background restore' do
+        tenant_post = Post.create!(title: 'Tenant Post Job', tenant: account)
+        undo_log = tenant_post.soft_delete_later!(tenant: account)
+        perform_enqueued_jobs
+
+        observed_tenant = nil
+        allow_any_instance_of(ActiveRecord::Undo::UndoLogItem).to receive(:restore_item!).and_wrap_original do |m|
+          observed_tenant = ActiveRecord::Undo.current_tenant
+          m.call
+        end
+
+        ActiveRecord::Undo.current_tenant = account
+        undo_log.restore_later!
+        ActiveRecord::Undo.current_tenant = nil
+
+        perform_enqueued_jobs
+
+        expect(observed_tenant).to eq(account)
+        expect(ActiveRecord::Undo.current_tenant).to be_nil
+      end
+
+      it 'restores successfully even if an associated child was hard-deleted before restore' do
+        undo_log = post.undo_log
+        comment_1.delete # Hard delete comment_1 from DB
+
+        undo_log.restore_later!
+        perform_enqueued_jobs
+
+        expect(post.reload.soft_deleted?).to be false
+        expect(comment_2.reload.soft_deleted?).to be false
+        expect(ActiveRecord::Undo::UndoLog.find_by(id: undo_log.id)).to be_nil
+      end
+    end
+
+    describe 'Model Status Predicates Edge Cases' do
+      it 'returns nil on unpersisted models' do
+        unpersisted = Post.new(title: 'Unpersisted')
+        expect(unpersisted.soft_delete_status).to be_nil
+        expect(unpersisted.restore_status).to be_nil
+      end
+
+      it 'returns completed for manually soft-deleted record without undo log' do
+        post.update_columns(deleted_at: Time.current)
+        expect(post.soft_delete_status).to eq('completed')
+        expect(post.restore_status).to be_nil
+      end
+
+      it 'returns nil after complete restoration lifecycle' do
+        post.soft_delete_later!
+        perform_enqueued_jobs
+        expect(post.soft_delete_status).to eq('completed')
+
+        post.restore_later!
+        perform_enqueued_jobs
+
+        expect(post.reload.soft_deleted?).to be false
+        expect(post.soft_delete_status).to be_nil
+        expect(post.restore_status).to be_nil
+      end
+    end
   end
 end

@@ -9,6 +9,7 @@ class Post < ActiveRecord::Base
   has_many :comments, dependent: :destroy
   has_many :delete_all_comments, class_name: 'Comment', dependent: :delete_all
   has_many :likes, dependent: :nullify
+  has_many :tags, dependent: :destroy
 end
 
 class Comment < ActiveRecord::Base
@@ -28,6 +29,10 @@ end
 class ArchiveItem < ActiveRecord::Base
   # Test custom soft-delete column support
   acts_as_undoable column: :archived_at
+end
+
+class Tag < ActiveRecord::Base
+  belongs_to :post
 end
 
 class User < ActiveRecord::Base

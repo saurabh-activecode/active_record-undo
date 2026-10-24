@@ -41,4 +41,10 @@ ActiveRecord::Schema.define do
     t.string :name
     t.timestamps
   end
+
+  create_table :tags, force: true do |t|
+    t.references :post
+    t.string :name
+    t.timestamps
+  end
 end

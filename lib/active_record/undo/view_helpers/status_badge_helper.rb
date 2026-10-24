@@ -5,6 +5,8 @@ module ActiveRecord
     module ViewHelpers
       module StatusBadgeHelper
         def undo_status_badge(target, action: :auto, **html_options)
+          return nil if target.nil?
+
           act, status = resolve_target_action_and_status(target, action)
           return nil unless status
 
@@ -24,13 +26,23 @@ module ActiveRecord
         private
 
         def resolve_target_action_and_status(target, action)
+          return nil if target.nil?
+
           case action
           when :soft_delete
-            ['soft_delete', target.respond_to?(:soft_delete_status) ? target.soft_delete_status : target.status]
+            ['soft_delete', extract_target_status(target, :soft_delete_status)]
           when :restore
-            ['restore', target.respond_to?(:restore_status) ? target.restore_status : target.status]
+            ['restore', extract_target_status(target, :restore_status)]
           else
             resolve_auto_action_and_status(target)
+          end
+        end
+
+        def extract_target_status(target, status_method)
+          if target.respond_to?(status_method)
+            target.public_send(status_method)
+          elsif target.respond_to?(:status)
+            target.status
           end
         end
 

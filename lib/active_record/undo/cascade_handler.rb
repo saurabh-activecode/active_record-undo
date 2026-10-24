@@ -40,10 +40,18 @@ module ActiveRecord
       end
 
       def cascade_collection_batched!(target, reflection, timestamp, undo_log, batch_size)
-        target.in_batches(of: batch_size) do |batch|
+        each_collection_batch(target, batch_size) do |batch|
           batch.each do |associated|
             cascade_record_batched!(associated, reflection, timestamp, undo_log, batch_size)
           end
+        end
+      end
+
+      def each_collection_batch(target, batch_size, &)
+        if target.respond_to?(:in_batches)
+          target.in_batches(of: batch_size, &)
+        else
+          target.each_slice(batch_size, &)
         end
       end
 

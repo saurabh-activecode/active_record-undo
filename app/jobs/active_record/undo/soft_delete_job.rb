@@ -9,6 +9,9 @@ module ActiveRecord
         undo_log = find_undo_log(undo_log_id)
         return unless undo_log
 
+        acquired = lock_and_start_processing!(undo_log)
+        return unless acquired
+
         execute_soft_delete_cascade(record_class_name, record_id, undo_log, whodunnit, tenant)
       rescue StandardError => e
         handle_failure(undo_log, e)
@@ -21,8 +24,17 @@ module ActiveRecord
         ActiveRecord::Undo::UndoLog.find_by(id: undo_log_id)
       end
 
+      def lock_and_start_processing!(undo_log)
+        undo_log.with_lock do
+          return false if undo_log.processing?
+          return false if undo_log.completed?
+
+          undo_log.update!(status: :processing)
+          true
+        end
+      end
+
       def execute_soft_delete_cascade(class_name, record_id, undo_log, whodunnit, tenant)
-        undo_log.update!(status: :processing)
         record = class_name.constantize.unscoped.find(record_id)
         timestamp = record_timestamp(record, undo_log)
 
