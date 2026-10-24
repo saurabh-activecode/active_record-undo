@@ -30,19 +30,19 @@ RSpec.describe ActiveRecord::Undo::ViewHelpers, type: :helper do
       html = view_context.undo_button_to(undo_log)
 
       expect(html).to include("action=\"/undo/logs/#{undo_log.id}/restore\"")
-      expect(html).to include('value="Undo"')
+      expect(html).to match(%r{value="Undo"|>Undo</button>})
     end
 
     it 'accepts custom button text as positional argument' do
       html = view_context.undo_button_to(undo_log, 'Revert Changes')
 
-      expect(html).to include('value="Revert Changes"')
+      expect(html).to match(%r{value="Revert Changes"|>Revert Changes</button>})
     end
 
     it 'accepts custom button text as keyword argument' do
       html = view_context.undo_button_to(undo_log, text: 'Restore Record', class: 'btn-primary')
 
-      expect(html).to include('value="Restore Record"')
+      expect(html).to match(%r{value="Restore Record"|>Restore Record</button>})
       expect(html).to include('class="btn-primary"')
     end
 
