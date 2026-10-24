@@ -4,6 +4,7 @@
 *.swp
 *.swo
 .DS_Store
+./agents
 
 # Bundler / Dependency paths
 /.bundle/
