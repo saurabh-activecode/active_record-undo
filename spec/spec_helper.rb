@@ -4,15 +4,18 @@
 require 'combustion'
 require 'active_record'
 
-# Initialize combustion dummy application with active_record, action_controller, and action_view
+# Initialize combustion dummy application with active_record, action_controller, action_view, and active_job
 Combustion.path = 'spec/internal'
-Combustion.initialize! :active_record, :action_controller, :action_view
+Combustion.initialize! :active_record, :action_controller, :action_view, :active_job
 
 require 'rspec/rails'
 require 'active_record/undo'
 require_relative 'internal/app/models/models'
 
+ActiveJob::Base.queue_adapter = :test
+
 RSpec.configure do |config|
+  config.include ActiveJob::TestHelper
   config.use_transactional_fixtures = true
 
   config.expect_with :rspec do |expectations|

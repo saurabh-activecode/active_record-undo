@@ -194,13 +194,114 @@ post.soft_deleted?  # => false
 post.comments.count # => 2
 ```
 
-#### Option B: Restore from the `UndoLog`
-
 ```ruby
 undo_log.restore!
 
 post.reload.soft_deleted? # => false
 ```
+
+### Asynchronous Cascades (`soft_delete_later!` & `restore_later!`)
+
+For deep or massive association trees (5,000+ items), synchronous processing can breach web request timeouts (e.g., Puma 30s limits, Cloudflare 524 timeouts). `active_record-undo` provides non-blocking asynchronous operations powered by ActiveJob, using batched DFS traversal to keep memory flat:
+
+```ruby
+# 1. Soft delete asynchronously: hides root record immediately and enqueues SoftDeleteJob
+undo_log = post.soft_delete_later!
+# Or specify a custom ActiveJob queue:
+undo_log = post.soft_delete_later!(queue: :low_priority)
+
+post.soft_deleted?            # => true (immediately hidden from Post.kept)
+post.soft_delete_status       # => "pending" -> "processing" -> "completed"
+post.soft_delete_processing?  # => true / false
+post.undoable?                # => false until SoftDeleteJob completes
+
+# 2. Restore asynchronously: enqueues RestoreJob to restore all cascaded items bottom-up
+post.restore_later!
+# Or call directly on the UndoLog:
+undo_log.restore_later!(queue: :critical)
+
+post.restore_status           # => "pending" -> "processing"
+post.restore_processing?      # => true / false
+```
+
+### Asynchronous Failure Recovery & Execution Logging
+
+When running asynchronous cascades over thousands of associated records, background jobs can encounter transient failures such as database connection drops, lock acquisition timeouts, deadlocks, or worker restarts. `active_record-undo` provides robust failure tracking, persistent error logging, and idempotent recovery semantics.
+
+#### 1. Lifecycle State Machine
+
+Every asynchronous operation updates execution state directly on the database `undo_logs` record:
+
+```
+[:pending] ────► [:processing] ────► [:completed] (Destroyed on restore completion)
+                       │
+                       ▼
+                   [:failed] (with persistent error_message)
+```
+
+- **`status`**: `:pending` (0), `:processing` (1), `:completed` (2), `:failed` (3).
+- **`action`**: `:soft_delete` (0), `:restore` (1).
+- **`error_message`**: Captures `exception.message` when a job fails.
+
+#### 2. Worker Re-raising & Queue Integration
+
+When an exception occurs during `SoftDeleteJob` or `RestoreJob`:
+1. The job catches `StandardError`.
+2. It immediately updates the `UndoLog` with `status: :failed` and `error_message: exception.message`.
+3. It **re-raises** the exception (`raise e`).
+
+Re-raising guarantees full integration with your ActiveJob backend (Sidekiq, Solid Queue, GoodJob, DelayedJob) and application monitoring:
+- **Queue Retries**: Native queue retries (e.g., `retry_on ActiveRecord::Deadlocked, wait: 5.seconds, attempts: 3`) function normally.
+- **Error Tracking**: Exceptions are automatically sent to Sentry, Honeybadger, Bugsnag, Datadog, etc., with full backtraces.
+- **Custom Base Job**: Set `config.base_job = 'ApplicationJob'` to inherit your application's logging tags, retry strategies, and discard handlers.
+
+#### 3. Idempotency & Safe Resumption
+
+Both jobs are engineered for safe re-entrancy, allowing failed or interrupted jobs to be retried without corrupting data or duplicating log items:
+
+- **Soft Delete Re-entrancy**: `CascadeHandler` uses `in_batches` and checks `associated.reload.soft_deleted?`. If a worker dies halfway or encounters a transient error, retrying the job safely skips already soft-deleted records and continues cascade processing for the remaining associations.
+- **Restore Batches & Row Locking**: `RestoreJob` acquires a database row lock using `undo_log.with_lock` (`SELECT FOR UPDATE`). This prevents duplicate or concurrent worker runs on the same log. Restorations update `deleted_at: nil` in batches (`find_each(batch_size: 1000)`). The `UndoLog` and its `undo_log_items` are only pruned after all batches finish. If an error interrupts restoration, the log and all un-restored items remain preserved in the database for inspection, retry, or manual recovery.
+
+#### 4. Inspecting & Retrying Failed Operations
+
+Engineers or automated recovery tasks can query and inspect failed jobs directly via ActiveRecord:
+
+```ruby
+# Query failed operations
+failed_logs = ActiveRecord::Undo::UndoLog.failed # or .where(status: :failed)
+
+failed_logs.each do |log|
+  puts "UndoLog ##{log.id} (#{log.action}) failed: #{log.error_message}"
+
+  # Re-enqueue restoration
+  log.restore_later! if log.action == "restore"
+
+  # Or execute synchronously to inspect immediately
+  log.restore! if log.action == "restore"
+end
+```
+
+#### 5. Frontend Polling & Error Observability
+
+Frontends can poll status endpoints using the numeric ID or signed token:
+- `GET /undo/logs/:id/status`
+- `GET /undo/status/:token`
+
+On failure, the endpoint returns a `200 OK` JSON payload with error details:
+
+```json
+{
+  "id": 42,
+  "status": "failed",
+  "action": "restore",
+  "error_message": "PG::QueryCanceled: canceling statement due to statement timeout",
+  "completed": false,
+  "failed": true
+}
+```
+
+The view helpers (`undo_status_badge`, `soft_delete_status_badge`, `restore_status_badge`) automatically apply the `.undo-status-failed` CSS class so your UI can display a failure indicator or retry button.
+
 
 ### Status & Eligibility Helpers
 
@@ -210,14 +311,25 @@ post.reload.soft_deleted? # => false
 # Checks if the soft-delete column is set
 post.soft_deleted? # => true / false
 
-# Verifies record is soft-deleted AND has a valid undo log available in the database
-post.undoable?     # => true / false
+# Verifies record is soft-deleted AND has a completed undo log ready to restore
+post.undoable?     # => true / false (false while async soft-delete/restore is in progress)
+
+# Soft-delete & Restore operation statuses (for frontend badges / live polling)
+post.soft_delete_status       # => "pending", "processing", "completed", "failed", or nil
+post.restore_status           # => "pending", "processing", "completed", "failed", or nil
+post.soft_delete_pending?     # => true / false
+post.soft_delete_processing?  # => true / false
+post.soft_delete_completed?   # => true / false
+post.soft_delete_failed?      # => true / false
+post.restore_pending?         # => true / false
+post.restore_processing?      # => true / false
+post.restore_failed?          # => true / false
 
 # Checks if the soft-deleted record has exceeded the configured retention period
 post.expired?      # => true / false
 
 # Retrieves the latest UndoLog audit record associated with this model
-post.undo_log      # => #<ActiveRecord::Undo::UndoLog id: 14, ...>
+post.undo_log      # => #<ActiveRecord::Undo::UndoLog id: 14, status: "completed", ...>
 post.latest_undo_log # alias
 
 # Generates a cryptographic signed restoration token directly from the model
@@ -279,12 +391,14 @@ end
 
 ### Available Endpoints
 
-| Method | Route                    | Controller#Action                    | Description                                |
-| :----- | :----------------------- | :----------------------------------- | :----------------------------------------- |
-| `POST` | `/undo/logs/:id/restore` | `active_record/undo/logs#restore`    | Restores an `UndoLog` by ID                |
-| `POST` | `/undo/restore/:token`   | `active_record/undo/restores#create` | Restores an `UndoLog` using a signed token |
+| Method | Route                    | Controller#Action                    | Description                                         |
+| :----- | :----------------------- | :----------------------------------- | :-------------------------------------------------- |
+| `POST` | `/undo/logs/:id/restore` | `active_record/undo/logs#restore`    | Restores an `UndoLog` by ID (supports `async: true`)|
+| `POST` | `/undo/restore/:token`   | `active_record/undo/restores#create` | Restores using signed token (supports `async: true`)|
+| `GET`  | `/undo/logs/:id/status`  | `active_record/undo/logs#status`     | Polls restoration or soft delete status JSON        |
+| `GET`  | `/undo/status/:token`    | `active_record/undo/restores#status` | Polls status JSON using signed token                |
 
-### View Helpers (`undo_button_to` & `undo_link_to`)
+### View Helpers (`undo_button_to`, `undo_link_to`, `undo_status_badge`, `soft_delete_status_badge` & `restore_status_badge`)
 
 Clean view helpers are automatically available in all Rails views and forms:
 
@@ -294,6 +408,18 @@ Clean view helpers are automatically available in all Rails views and forms:
 
 <%# Pass model instances directly %>
 <%= undo_button_to(post, text: "Undo Delete", class: "btn btn-primary") %>
+
+<%# Asynchronous restore button %>
+<%= undo_button_to(post, params: { async: true }, text: "Restore Asynchronously") %>
+
+<%# Auto-detecting status badge helper for frontend progress %>
+<%= undo_status_badge(post) %>
+<!-- Renders: <span class="undo-status-badge undo-soft-delete-badge undo-status-processing">Processing</span> -->
+
+<%# Explicit status badge helpers for soft delete and restore %>
+<%= soft_delete_status_badge(post) %>
+<%= restore_status_badge(post) %>
+<%= soft_delete_status_badge(post, text: "Deleting...") %>
 
 <%# Secure direct link with signed token (prevents ID enumeration in emails or public links) %>
 <%= undo_button_to(@undo_log, signed: true, class: "btn btn-success") %>
@@ -511,6 +637,10 @@ ActiveRecord::Undo.configure do |config|
   # Base controller for engine authentication and authorization hooks
   # Defaults to "::ApplicationController" if defined, falling back to ActionController::Base
   config.base_controller = "::ApplicationController"
+
+  # Base job class for asynchronous workers (SoftDeleteJob, RestoreJob, PurgeJob)
+  # Defaults to "::ActiveJob::Base"
+  config.base_job = "::ActiveJob::Base"
 
   # Fallback redirect path after successful restore when no redirect_to or referer exists
   config.default_redirect_path = ->(main_app) { main_app.root_path }

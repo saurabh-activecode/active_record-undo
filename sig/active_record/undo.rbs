@@ -1,6 +1,55 @@
 module ActiveRecord
   module Undo
     VERSION: String
-    # See the writing guide of rbs: https://github.com/ruby/rbs#guides
+
+    class Error < StandardError
+    end
+
+    class SecurityError < Error
+    end
+
+    def self.whodunnit: () -> untyped
+    def self.whodunnit=: (untyped) -> untyped
+    def self.current_tenant: () -> untyped
+    def self.current_tenant=: (untyped) -> untyped
+    def self.config: () -> Configuration
+    def self.configure: () { (Configuration) -> void } -> void
+    def self.registered_models: () -> Set[untyped]
+    def self.undoable_models: () -> Array[untyped]
+    def self.base_controller_class: () -> untyped
+    def self.base_job_class: () -> untyped
+
+    class Configuration
+      attr_accessor retention_period: untyped
+      attr_accessor current_user_method: untyped
+      attr_accessor current_tenant_method: untyped
+      attr_accessor base_controller: untyped
+      attr_accessor base_job: untyped
+      attr_accessor default_redirect_path: untyped
+      attr_accessor token_secret_key: String?
+      attr_accessor token_expires_in: untyped
+      attr_accessor error_handling: Symbol
+
+      def initialize: () -> void
+    end
+
+    module StatusPredicates
+      def soft_delete_pending?: () -> bool
+      def soft_delete_processing?: () -> bool
+      def soft_delete_completed?: () -> bool
+      def soft_delete_failed?: () -> bool
+      def restore_pending?: () -> bool
+      def restore_processing?: () -> bool
+      def restore_completed?: () -> bool
+      def restore_failed?: () -> bool
+    end
+
+    module ViewHelpers
+      def undo_button_to: (untyped target, ?String? text, ?signed: bool, **untyped html_options) -> untyped
+      def undo_link_to: (untyped target, ?String? text, ?signed: bool, **untyped html_options) -> untyped
+      def undo_status_badge: (untyped target, ?action: Symbol, **untyped html_options) -> untyped
+      def soft_delete_status_badge: (untyped target, **untyped html_options) -> untyped
+      def restore_status_badge: (untyped target, **untyped html_options) -> untyped
+    end
   end
 end
